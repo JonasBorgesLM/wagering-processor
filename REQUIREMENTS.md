@@ -222,14 +222,20 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 | Wallet created | `201` |
 | Pending reference, or its replay | `202` |
 | Invalid payload, missing key, bad cursor, `OPENING`, reserved provider | `400` |
+| Body over the size limit | `413` |
 | Wallet or transaction not found | `404` |
 | Idempotency, external id, or duplicate wallet conflict | `409` |
 | Business rejection, or its replay | `422` |
 | Transient infrastructure failure, with `Retry-After` | `503` |
 
-- **FR-60** The ledger uses an opaque, stable cursor; `limit` defaults to 50 with a maximum of 200.
+- **FR-60** The ledger uses an opaque, stable cursor; `limit` defaults to 50 with a maximum of 200, and a `limit` outside 1 to 200 is a `400`, not clamped, so a provider hears that it asked for more than it gets. The cursor means "after this wallet version", so entries added while paging are neither skipped nor repeated.
 - **FR-61** Health endpoints are unauthenticated: `live` checks the process, `ready` checks PostgreSQL and SQS.
 - **FR-62** The provider id `internal` is reserved for `OPENING` and rejected on input (`INT-16`). The domain enforces it both ways: `WagerTransaction.create` refuses the id and refuses the kind `OPENING`, and only `createOpening` can produce one, so the submit path cannot make an opening however a payload is shaped.
+- **FR-63** Every error from a business endpoint is `{ "error": { "code", "message", "details"? } }`, with one mapping from situation to status for all endpoints ([ADR-0012](docs/adr/0012-errors-are-one-envelope-with-one-mapping.md)). `details` lists every field problem of a `400`. The message is written for the caller and never copied from the error.
+- **FR-64** A request body is at most 16 KB (`413`) and must be a JSON object with exactly the documented fields; unknown fields are refused (`INT-25`). Query strings ignore parameters they do not know. Path ids must be UUIDs: a malformed one is a `400`, never a database error.
+- **FR-65** Every response carries `X-Correlation-Id`: the caller's when it is plain (`[A-Za-z0-9._:-]`, at most 128 characters), otherwise a generated one, so a header value is never reflected. The id reaches the events.
+- **FR-66** A process serves the wallet routes only when it has the `api` role; without it the routes do not exist and health and metrics still answer (ADR-0001).
+- **FR-67** Reads take no lock and see committed state, so a wallet under heavy settlement can still be read. They run under the same statement timeout as writes (NFR-11).
 
 ### 3.10 Reconciliation (§9)
 
@@ -358,6 +364,8 @@ Every event is stored in the outbox and published as this envelope. `eventType` 
 | `INT-22` | `CURRENCY_MISMATCH` carries no balance | An observed balance is recorded in the transaction's own currency, and the wallet's is in another | Converting or storing the wallet's currency alongside: a second currency field on every row for one rejection |
 | `INT-23` | Every event's aggregate id is the wallet id, including the transaction events | The outbox uses it as the FIFO message group (ADR-0007), and a wallet is the unit of ordering and concurrency (§8) | The transaction id: events of one wallet would then spread over many groups and lose their order |
 | `INT-24` | Wallet, player and transaction ids are `uuid` columns; provider ids, external ids and keys are `varchar(255)` | The challenge's samples are UUIDs, and a bounded column backs SR-04 at the last line | `text` everywhere: nothing would bound an indexed value, and an over-long key would fail with an index-size error |
+| `INT-25` | Ids are accepted in any case and handled in lowercase; bodies refuse unknown fields; query strings ignore them | Ids are compared as text and PostgreSQL stores a UUID in lowercase, so a retry in another case must not become another player. A body field we would silently drop is a typo the provider should hear about, while an extra query parameter (a tracking tag) carries nothing we store | Case-sensitive ids. Ignoring unknown body fields, which loses data without a word |
+| `INT-26` | Creating a wallet is not idempotent: a second request for the same player and currency is a `409`, even if identical | §9: a duplicate "must fail as a conflict" | A key on wallet creation, which would make a retry safe at the cost of what the challenge asked for. A retry after a timeout can find the wallet exists, and reads it with `GET` |
 
 ---
 

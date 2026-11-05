@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, the settlement policy, the integration events, the payload hash, the schema, the persistence mappers and the settlement use case exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
+> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, the settlement policy, the integration events, the payload hash, the schema, the persistence mappers, the settlement use case and the wallet API exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
 
 ---
 
@@ -199,6 +199,17 @@ The same claim pattern on `PENDING_REFERENCE` rows with a due `next_retry_at`, t
 
 Outcomes are in REQUIREMENTS section 3.11. `SIGTERM` stops polling, finishes in-flight messages within `SHUTDOWN_TIMEOUT_MS`, returns visibility for the rest and fails readiness (FR-80). Compose's `stop_grace_period` is longer than that timeout, so Docker does not kill a draining instance.
 
+## HTTP API
+
+Implemented: `POST /wallets`, `GET /wallets/:walletId` and `GET /wallets/:walletId/ledger`. The transaction endpoints, the idempotency header and the authentication guard are issue #14.
+
+- **Controllers are thin:** parse, call one use case, shape the answer. Parsing is by hand and collects every problem before refusing, so a provider fixes a request in one round trip. There is no validation library, because the shapes are small.
+- **`OpenWallet`** is one SQL transaction: the wallet first (the others point at it), then the `OPENING` transaction, its ledger entry and the events (FR-11). The unique index on player and currency decides a race, so 20 creations at once give one wallet and 19 conflicts.
+- **`QueryWallets`** reads through a `WalletReader` port that takes no lock (FR-67). The ledger is ordered by `wallet_version`, which is unique within a wallet and only grows, so a page is a range scan on `uq_ledger_wallet_version` and the cursor can mean "after version N".
+- **The cursor is opaque, not secret or signed.** Editing it starts from another place in the same wallet's ledger, which anyone could read from the start.
+- **Errors** are one envelope and one mapping, applied by a filter and by a middleware after the body parser ([ADR-0012](docs/adr/0012-errors-are-one-envelope-with-one-mapping.md)).
+- **Composition:** `src/app.ts` builds the application for `main` and for the tests alike, and `AppModule.register(config)` is the one place that knows both platform and business code. Entities and roles are passed in, because `platform` may not import business code.
+
 ## Schema
 
 The schema enforces what must hold even if the code is wrong (NFR-02). It is in `migrations/`, and every constraint below has a test in raw SQL that asserts which constraint refused the row. Triggers add what a constraint cannot express: the ledger refuses `UPDATE`, `DELETE` and `TRUNCATE`, and a terminal transaction refuses `UPDATE` and `DELETE`.
@@ -325,7 +336,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 0 | Base: tooling, CI, platform, runtime contracts, documents | Done |
 | 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, settlement policy, integration events, payload hash | Done |
 | 2 | Schema: migrations, constraints, triggers, persistence records and mappers | Done |
-| 3 | Settlement use case and HTTP API | In progress: settlement use case done, HTTP not started |
+| 3 | Settlement use case and HTTP API | In progress: settlement use case and wallet API done; transaction endpoints not started |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Not started |
 | 5 | Outbox and publisher | Not started |
 | 6 | Out-of-order references worker | Not started |
