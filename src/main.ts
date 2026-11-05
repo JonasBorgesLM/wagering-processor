@@ -1,6 +1,5 @@
 import "reflect-metadata";
-import { NestFactory } from "@nestjs/core";
-import { AppModule } from "./app.module";
+import { createApp } from "./app";
 import { loadConfig } from "./platform/config/config";
 import { JsonLogger } from "./platform/logging/json-logger";
 
@@ -8,8 +7,7 @@ const logger = new JsonLogger();
 
 async function bootstrap(): Promise<void> {
   const config = loadConfig();
-  const app = await NestFactory.create(AppModule, { logger });
-  app.enableShutdownHooks();
+  const app = await createApp(config, logger);
 
   // If a hook hangs, leave rather than block: unacked messages return to the queue on their own.
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
