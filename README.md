@@ -70,6 +70,7 @@ curl localhost:3001/health/ready   # also 3002, 3003
 | `bun run test:integration` | Needs `docker compose up postgres sqs` |
 | `bun run test:concurrency` | Real parallel connections; needs the same services |
 | `bun run check:docs` | ADR index, cited ids, relative links |
+| `./.github/scripts/check-instances.sh` | Needs `docker compose --profile app up -d --build --wait`: three processes behave as one system |
 
 ## API
 
