@@ -50,3 +50,9 @@ export class InvalidWagerTransactionError extends DomainError {
   readonly code = "INVALID_WAGER_TRANSACTION";
   override readonly name = "InvalidWagerTransactionError";
 }
+
+/** An event that cannot be built from what it was given: the wrong state, or inputs that do not describe one moment. */
+export class InvalidIntegrationEventError extends DomainError {
+  readonly code = "INVALID_INTEGRATION_EVENT";
+  override readonly name = "InvalidIntegrationEventError";
+}

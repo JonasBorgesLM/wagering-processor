@@ -55,6 +55,10 @@ export function stored(
   kind: Kind,
   status: Status,
   overrides: Partial<CreateWagerTransactionProps> = {},
+  /** Outcome fields, to build a stored row that is complete apart from what a test means to get wrong. */
+  outcome: Partial<
+    Pick<WagerTransactionState, "referenceTransactionId" | "failureCode" | "observedBalance" | "processedAt">
+  > = {},
 ): WagerTransaction {
   const base =
     kind === Kind.Opening
@@ -85,6 +89,7 @@ export function stored(
     failureCode: undefined,
     observedBalance: undefined,
     processedAt: undefined,
+    ...outcome,
   };
   return WagerTransaction.rehydrate(state);
 }
