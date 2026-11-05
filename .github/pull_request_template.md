@@ -19,6 +19,8 @@ Delete the lines that do not apply; do not delete the ones that do.
 - [ ] No network call inside a SQL transaction.
 - [ ] The wallet lock still comes before any insert referencing the wallet.
 - [ ] Events are written through the outbox only.
+- [ ] Every new external call has a timeout, and any retry is bounded and idempotent.
+- [ ] New long-running work stops cleanly on `SIGTERM`.
 - [ ] Tests use real PostgreSQL and SQS, and assert `balance == ledger rebuild`.
 
 ## Negative controls
@@ -29,3 +31,4 @@ Delete the lines that do not apply; do not delete the ones that do.
 
 - [ ] A structural decision here has an ADR, written before the code.
 - [ ] Status lines in `README.md` and `ARCHITECTURE.md` are still true.
+- [ ] The documents named in the issue were updated in this PR.

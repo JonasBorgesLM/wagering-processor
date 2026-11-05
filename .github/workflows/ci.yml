@@ -82,6 +82,17 @@ jobs:
       - run: ./.github/scripts/check-adr-immutable.sh "${{ github.event.pull_request.base.sha }}"
         continue-on-error: ${{ contains(github.event.pull_request.labels.*.name, 'adr-typo') }}
 
+  docs-with-code:
+    name: behaviour changes update documents
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: ./.github/scripts/check-docs-touched.sh "${{ github.event.pull_request.base.sha }}"
+        continue-on-error: ${{ contains(github.event.pull_request.labels.*.name, 'no-docs-needed') }}
+
   commits:
     name: conventional commits
     runs-on: ubuntu-latest
@@ -104,7 +115,7 @@ jobs:
   ci-ok:
     name: CI OK
     if: always()
-    needs: [quality, integration, image, docs, adr-immutability, commits]
+    needs: [quality, integration, image, docs, adr-immutability, docs-with-code, commits]
     runs-on: ubuntu-latest
     steps:
       - run: |

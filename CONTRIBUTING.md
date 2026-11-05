@@ -31,6 +31,22 @@ Gitflow, with both long-lived branches protected:
 - **Every merge needs the owner's explicit authorization.** No approval is enforced by GitHub, so this rule depends on stopping at the pull request.
 - **Stacked pull requests have an order:** retarget the dependent one before deleting its base branch, or GitHub closes it.
 
+## From issue to merge
+
+Git is the source of truth for the system and its state: code, migrations, queue provisioning, Compose, CI and documents all change through a pull request.
+
+1. Take an issue from the [project board](https://github.com/users/JonasBorgesLM/projects/10) and move it to In Progress.
+2. Branch from `develop`: `feature/<issue>-<slug>`.
+3. Open a pull request with `Closes #<issue>`, updating the documents the issue names.
+4. `CI OK` passes, and the owner authorizes the merge.
+5. Closing the issue moves it to Done.
+
+Strict GitOps, where an agent reconciles a running environment from Git, does not apply: nothing here is deployed. If a deployment appears, its desired state belongs in this repository too.
+
+## Documentation
+
+A change to behaviour updates its documents in the same pull request. CI fails when `src` or `migrations` change with no document touched, unless the PR is labelled `no-docs-needed` (NFR-12). Status lines in `README.md` and `ARCHITECTURE.md` must say what the code does today, not what is planned.
+
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org), checked by commitlint on each commit and on the PR title.
@@ -59,4 +75,4 @@ An ADR comes before the code it governs. An existing ADR may gain lines, never l
 
 ## Not enforced
 
-Named so nothing reads as more guaranteed than it is: that the commit body explains why, that a negative control was really run, and any coverage threshold.
+Named so nothing reads as more guaranteed than it is: that the commit body explains why, that a negative control was really run, that a changed document is correct, and any coverage threshold.
