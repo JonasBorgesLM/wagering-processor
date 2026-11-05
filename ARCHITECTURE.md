@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet` and `WalletLedgerEntry` exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
+> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry` and `WagerTransaction` exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
 
 ---
 
@@ -68,19 +68,26 @@ class Wallet {                                  // implemented
 // Movement = { transactionId, entryId, at }: ids come from outside, so the domain stays deterministic.
 // The OPENING WagerTransaction belongs to the use case, which supplies its id; Wallet only records the entry.
 
-class WagerTransaction {
+class WagerTransaction {                        // implemented
+  /** A provider's operation. Cannot make an OPENING and refuses the reserved provider id (FR-62). */
   static create(props: CreateWagerTransactionProps): WagerTransaction;
-  static rehydrate(state: WagerTransactionState): WagerTransaction;
+  /** The only way to make an OPENING. Its keys derive from the wallet, so a second one collides in the schema (INT-21). */
+  static createOpening(props: CreateOpeningProps): WagerTransaction;
+  static rehydrate(state: WagerTransactionState): WagerTransaction;   // any status, no validation
+  // PENDING → PROCESSED | REJECTED | PENDING_REFERENCE | FAILED; PENDING_REFERENCE → PROCESSED | REJECTED | FAILED.
+  // Each validates first and then changes state, so a refusal leaves it untouched.
   markProcessed(referenceTransactionId: string | undefined, balance: Money, at: Date): void;
   markPendingReference(balance: Money): void;
-  reject(code: RejectionCode, balance: Money | undefined): void;
-  fail(code: FailureCode): void;
+  reject(code: RejectionCode, balance: Money | undefined): void;   // balance absent for PLAYER_WALLET_MISMATCH (FR-58)
+  fail(code: InfrastructureFailureCode): void;                      // SETTLEMENT_FAILED only (INT-20)
   isTerminal(): boolean;
-  affectsBalance(): boolean;
+  affectsBalance(): boolean;                    // kind level: false for LOSS
   requiresReference(): boolean;
+  acceptsReference(reference: WagerTransaction): boolean;           // kind rules only; same wallet/round/amount are the policy's
   matchesPayload(payloadHash: string): boolean;
-  ledgerDirectionFor(reference?: WagerTransaction): LedgerDirection;
+  ledgerDirectionFor(reference?: WagerTransaction): LedgerDirection;   // a ROLLBACK inverts its reference
 }
+// Retry bookkeeping for PENDING_REFERENCE (attempts, next retry, expiry) is not here yet: issue #19 adds it.
 
 class WalletLedgerEntry {                       // implemented; frozen, no transitions, dates copied in and out
   static create(props: CreateLedgerEntryProps): WalletLedgerEntry;  // validates the arithmetic
@@ -277,7 +284,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 0 | Base: tooling, CI, platform, runtime contracts, documents | Done |
-| 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, `SettlementPolicy` | In progress: `Money`, `Wallet`, ledger entry done |
+| 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, `SettlementPolicy` | In progress: `Money`, `Wallet`, ledger entry, `WagerTransaction` done |
 | 2 | Schema: migrations, constraints, triggers | Not started |
 | 3 | Settlement use case and HTTP API | Not started |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Not started |

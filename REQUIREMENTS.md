@@ -135,7 +135,7 @@ PENDING_REFERENCE ──▶ PROCESSED | REJECTED | FAILED
 
 - **FR-30** `PROCESSED`, `REJECTED` and `FAILED` are terminal. Transitioning out of them is a programming error, not a business path.
 - **FR-31** `PENDING` is the in-memory birth state; the first commit stores its outcome, because HTTP and SQS settle synchronously (`INT-10`).
-- **FR-32** `FAILED` is set only by the pending-reference worker, for a stored transaction that cannot be settled for non-business reasons after its attempts run out. Failures with no stored row go to retry or DLQ (`INT-11`).
+- **FR-32** `FAILED` is set only by the pending-reference worker, for a stored transaction that cannot be settled for non-business reasons after its attempts run out. Failures with no stored row go to retry or DLQ (`INT-11`). It carries `SETTLEMENT_FAILED`, never a business code, because a rejection blames the payload and an infrastructure fault must not (`INT-20`).
 
 ### 3.5 Settlement order
 
@@ -190,6 +190,7 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 | `REFERENCE_AMOUNT_MISMATCH` | yes | Fix payload, new id |
 | `ALREADY_REVERSED` | yes | Give up: already reversed |
 | `BALANCE_LIMIT_EXCEEDED` | yes | Escalate |
+| `SETTLEMENT_FAILED` | yes, status `FAILED` | Escalate: infrastructure could not settle it, and the payload is not at fault |
 | `WALLET_NOT_FOUND` | no | Fix payload; same key may be resent |
 | `IDEMPOTENCY_CONFLICT` | no | Fix the key or payload |
 | `EXTERNAL_ID_CONFLICT` | no | Fix the key or id |
@@ -210,7 +211,7 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 
 - **FR-60** The ledger uses an opaque, stable cursor; `limit` defaults to 50 with a maximum of 200.
 - **FR-61** Health endpoints are unauthenticated: `live` checks the process, `ready` checks PostgreSQL and SQS.
-- **FR-62** The provider id `internal` is reserved for `OPENING` and rejected on input (`INT-16`).
+- **FR-62** The provider id `internal` is reserved for `OPENING` and rejected on input (`INT-16`). The domain enforces it both ways: `WagerTransaction.create` refuses the id and refuses the kind `OPENING`, and only `createOpening` can produce one, so the submit path cannot make an opening however a payload is shaped.
 
 ### 3.10 Reconciliation (§9)
 
@@ -307,6 +308,8 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 | `INT-17` | Queue conflicts go to DLQ | §10 permanent errors; a queue has no caller to answer | Ack with a dedicated audit table |
 | `INT-18` | `OPENING` publishes events | §11 "any applied transaction" | Silent opening |
 | `INT-19` | Separate event queue | §10 defines only input and DLQ queues | Publishing into the input queue, which would feed consumers their own events |
+| `INT-20` | `FAILED` carries its own code, `SETTLEMENT_FAILED` | §7.2 wants a stable code on every terminal outcome, and `FAILED` is not a business rejection | Reusing a business code: the provider would read our fault as its own payload error |
+| `INT-21` | An `OPENING` derives its keys from the wallet id | One opening per wallet is then enforced by the unique idempotency key in the schema, not only by code | Random keys: a second opening would be a different row, and nothing would refuse it |
 
 ---
 
