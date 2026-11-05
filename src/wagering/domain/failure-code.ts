@@ -41,3 +41,14 @@ export function isRejectionCode(value: unknown): value is RejectionCode {
 export function isInfrastructureFailureCode(value: unknown): value is InfrastructureFailureCode {
   return (INFRASTRUCTURE_FAILURE_CODES as readonly unknown[]).includes(value);
 }
+
+/**
+ * Rejections whose response must not carry a balance (FR-58). A wallet that
+ * belongs to someone else must not leak its balance, and a balance in another
+ * currency cannot be recorded against a transaction in this one.
+ */
+const WITHOUT_BALANCE: readonly RejectionCode[] = ["PLAYER_WALLET_MISMATCH", "CURRENCY_MISMATCH"];
+
+export function disclosesBalance(code: RejectionCode): boolean {
+  return !WITHOUT_BALANCE.includes(code);
+}

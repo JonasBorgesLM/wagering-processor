@@ -122,9 +122,12 @@ Starting from a balance of `100.00`, each line continuing from the previous:
 | `WIN` w2 `500.00`, no reference | `PROCESSED` | `520.00` |
 | Player spends: `BET` b2 `510.00` | `PROCESSED` | `10.00` |
 | `ROLLBACK` x4 of w2, `500.00` | `REJECTED`, `REVERSAL_INSUFFICIENT_FUNDS` | `10.00` |
-| `ROLLBACK` x5 of `LOSS` or `OPENING` | `REJECTED`, `REFERENCE_KIND_NOT_ALLOWED` | `10.00` |
+| `LOSS` l1 of b2, `0.00` | `PROCESSED`, no ledger entry, version unchanged | `10.00` |
+| `ROLLBACK` x5 of a `LOSS` | `REJECTED`, `REFERENCE_KIND_NOT_ALLOWED` | `10.00` |
 | `REFUND` r4 of w2 | `REJECTED`, `REFERENCE_KIND_NOT_ALLOWED` | `10.00` |
 | `ROLLBACK` x6 of a transaction not yet arrived | `PENDING_REFERENCE` | `10.00` |
+
+A provider cannot reverse an `OPENING`: it belongs to the internal provider, and a reference is looked up within the sender's own provider, so it is never found. The transaction waits and expires as `REFERENCE_NOT_FOUND` (FR-20, FR-26). Handed one directly, the policy refuses it as `REFERENCE_MISMATCH`, because its provider and round never match.
 
 ### 3.4 Status lifecycle (§6.3)
 
@@ -173,7 +176,7 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 - **FR-55** The balance observed at decision time is stored on the transaction, because `LOSS` and `REJECTED` have no ledger entry to read it from.
 - **FR-56** A replay of a pending transaction returns its current state, and after settlement its final one.
 - **FR-57** A `REJECTED` result is final for that key, even if the condition later clears. To try again, the provider sends a new `externalTransactionId`.
-- **FR-58** `PLAYER_WALLET_MISMATCH` responses never include a balance: it belongs to another player (`INT-15`).
+- **FR-58** `PLAYER_WALLET_MISMATCH` and `CURRENCY_MISMATCH` responses never include a balance: the first belongs to another player (`INT-15`), and the second is in a different currency from the transaction it would be recorded against (`INT-22`).
 
 ### 3.8 Failure codes (§7.2)
 
@@ -310,6 +313,7 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 | `INT-19` | Separate event queue | §10 defines only input and DLQ queues | Publishing into the input queue, which would feed consumers their own events |
 | `INT-20` | `FAILED` carries its own code, `SETTLEMENT_FAILED` | §7.2 wants a stable code on every terminal outcome, and `FAILED` is not a business rejection | Reusing a business code: the provider would read our fault as its own payload error |
 | `INT-21` | An `OPENING` derives its keys from the wallet id | One opening per wallet is then enforced by the unique idempotency key in the schema, not only by code | Random keys: a second opening would be a different row, and nothing would refuse it |
+| `INT-22` | `CURRENCY_MISMATCH` carries no balance | An observed balance is recorded in the transaction's own currency, and the wallet's is in another | Converting or storing the wallet's currency alongside: a second currency field on every row for one rejection |
 
 ---
 

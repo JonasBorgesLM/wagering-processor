@@ -4,7 +4,7 @@ A distributed financial service that applies betting operations from game provid
 
 Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge).
 
-> **Status: early.** The runtime, tooling, CI, documents, `Money`, `Wallet`, the ledger entry and the transaction lifecycle are in place. **There is no wallet, transaction or ledger code yet**, so this does not process a bet today. See the [roadmap](ARCHITECTURE.md#roadmap).
+> **Status: early.** The runtime, tooling, CI, documents, `Money`, `Wallet`, the ledger entry, the transaction lifecycle and the settlement rules are in place. **There is no wallet, transaction or ledger code yet**, so this does not process a bet today. See the [roadmap](ARCHITECTURE.md#roadmap).
 
 ---
 
@@ -16,7 +16,8 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 - Structured JSON logs with an allowlist of fields.
 - `Money`: exact `bigint` arithmetic with strict contract parsing and no rounding path.
 - `Wallet` and `WalletLedgerEntry`: a balance that cannot go negative, whose every change returns the entry that records it, and an entry that cannot be built unbalanced or changed afterwards. These are domain classes only; nothing stores them yet.
-- `WagerTransaction`: the lifecycle of an operation, where `PROCESSED`, `REJECTED` and `FAILED` are terminal and every other move is refused. It cannot be made into an `OPENING` through the submit path. The rules that decide *which* outcome (`SettlementPolicy`) are not written yet.
+- `decideSettlement`: the rules that choose an outcome for an operation (apply, reject with a stable code, or wait for its reference), as a pure function with no I/O. Nothing runs it against a database yet.
+- `WagerTransaction`: the lifecycle of an operation, where `PROCESSED`, `REJECTED` and `FAILED` are terminal and every other move is refused. It cannot be made into an `OPENING` through the submit path. 
 - Designed but not implemented: idempotency, duplicate control, consistency and resilience, described in [Patterns](ARCHITECTURE.md#patterns).
 - Contract tests on what the design relies on: row-lock serialization, the deadlock that fixes the lock order, exact `NUMERIC` strings, reversible migrations, FIFO group hold, deduplication, visibility and DLQ redrive.
 

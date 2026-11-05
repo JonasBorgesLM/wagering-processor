@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry` and `WagerTransaction` exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
+> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction` and the settlement policy exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
 
 ---
 
@@ -96,20 +96,24 @@ class WalletLedgerEntry {                       // implemented; frozen, no trans
   // also carries walletVersion: the version the entry produced (FR-15)
 }
 
-/** Pure decision: the settlement order in REQUIREMENTS section 3.5, with no I/O. */
-class SettlementPolicy {
-  decide(input: {
-    transaction: WagerTransaction;
-    wallet: Wallet;
-    reference: WagerTransaction | undefined;
-    referenceAlreadyReversed: boolean;
-  }): SettlementDecision;
-}
+/**
+ * Implemented as a pure function, not a class: it has no state and nothing to inject.
+ * REQUIREMENTS section 3.5, steps 3 to 11. The order is the requirement, so the tests swap every pair
+ * of adjacent checks and expect a failure.
+ */
+function decideSettlement(input: {
+  transaction: WagerTransaction;
+  wallet: Wallet;                               // loaded under its lock
+  reference: WagerTransaction | undefined;      // looked up within the sender's own provider
+  referenceAlreadyReversed: boolean;            // a PROCESSED reversal already points at it (ADR-0006)
+}): SettlementDecision;
 
+// Each variant carries what the transition needs, so the caller decides nothing.
 type SettlementDecision =
-  | { outcome: "apply"; direction: LedgerDirection | undefined; reference?: WagerTransaction }
-  | { outcome: "reject"; code: RejectionCode }
-  | { outcome: "wait-reference" };
+  | { outcome: "apply"; direction: LedgerDirection | undefined; referenceTransactionId: string | undefined }
+  | { outcome: "reject"; code: RejectionCode; observedBalance: Money | undefined }   // absent for PLAYER_WALLET_MISMATCH and CURRENCY_MISMATCH (FR-58)
+  | { outcome: "wait-reference"; observedBalance: Money };
+// REFERENCE_NOT_FOUND is never returned here: a missing reference waits, and only the worker rejects it, on expiry (FR-42).
 ```
 
 **A rejection is a value, not an exception.** It must commit along with its inbox row and event. An exception would invite a rollback, and the rejection would vanish. Exceptions are for programming errors and infrastructure failures, which should roll back.
@@ -158,7 +162,7 @@ BEGIN
      missing → roll back, WALLET_NOT_FOUND
   3. re-read by key and by external id: replay or conflict (FR-52, FR-53, FR-54)
   4. resolve the reference, inside this lock (FR-21)
-  5. SettlementPolicy.decide: section 3.5 of the requirements
+  5. decideSettlement: section 3.5 of the requirements
   6. apply: wallet + ledger + transaction + outbox
      reject: transaction + outbox     (FR-25, FR-55)
      wait:   transaction + outbox     (FR-40)
@@ -284,7 +288,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 0 | Base: tooling, CI, platform, runtime contracts, documents | Done |
-| 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, `SettlementPolicy` | In progress: `Money`, `Wallet`, ledger entry, `WagerTransaction` done |
+| 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, settlement policy | In progress: all done except integration events and the payload hash (#8) |
 | 2 | Schema: migrations, constraints, triggers | Not started |
 | 3 | Settlement use case and HTTP API | Not started |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Not started |
