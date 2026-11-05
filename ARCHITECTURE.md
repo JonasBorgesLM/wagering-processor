@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, the settlement policy, the integration events, the payload hash, the schema, the persistence mappers, the settlement use case and the wallet API exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
+> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, the settlement policy, the integration events, the payload hash, the schema, the persistence mappers, the settlement use case and the HTTP API exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
 
 ---
 
@@ -152,7 +152,7 @@ HTTP, SQS and the reference worker share this. **The order is the requirement**:
 ```text
 outside any transaction
   validate payload, compute hash (SR-04, FR-51)
-  lock-free read by key: terminal row → replay or conflict (FR-52, FR-53)
+  lock-free read by key, then by the provider's id: a row found → replay or conflict (FR-52, FR-53, FR-54)
 
 BEGIN
   1. inbox insert ON CONFLICT DO NOTHING, SQS only (NFR-04)
@@ -171,6 +171,8 @@ after commit: respond, or ack (NFR-04)
 
 A unique violation in step 6 means a race on the same key from another wallet path. The flow restarts once and finds the winner's row (ADR-0005).
 
+**The two reads are not one snapshot, and the code asks what a row is, not which read found it.** A twin can commit between the lookup by key and the lookup by the provider's id. The first then misses and the second finds the twin's row, which carries *our* key. The first version read that as "this operation exists under another key" and answered `EXTERNAL_ID_CONFLICT` to a request that was a plain replay: 13 of 600 identical requests, in 8 of 12 rounds of fifty spread over three processes. It never showed up in a single process, and it was found by the check that uses three. A row under our own key is a replay (or a key conflict, if the payload differs) however it was reached; only a row under another key is the id conflict. A test makes a twin commit in exactly that gap.
+
 **Implemented** in `SubmitWagerTransaction`, without the inbox step, which comes with the consumer (#15). `outbox_messages` is written, and nothing publishes it until #18.
 
 ### Lock limits
@@ -179,6 +181,18 @@ A unique violation in step 6 means a race on the same key from another wallet pa
 - **`STATEMENT_TIMEOUT_MS`, default 5000.** The upper bound on any statement, lock wait included, so a hung query cannot hold a connection forever (NFR-11). It is longer than the lock limit so the lock limit answers first, with its own code.
 - Both are `SET LOCAL`: they end with the transaction and do not leak to the connection's next user, which a test checks.
 - **What is transient:** `55P03`, `40P01`, `40001`, `57014`, the shutdown and connection classes, and network errors. Nothing was committed, so trying again is safe. A constraint violation is not: retrying cannot change its answer, so it stays loud. Only a violation of the two operation keys restarts the flow.
+
+### Connection pool
+
+A request needs a connection for as long as it holds a lock, and a lock can be waited on, so the pool is where a burst on one wallet turns into a problem for every other wallet. It is bounded on both sides (NFR-11).
+
+- **`DATABASE_POOL_MAX`, default 10 per process.** PostgreSQL allows 100 connections by default, so three processes at 10 use 30 and leave room for migrations, monitoring and more instances. More is not faster: a settlement takes about 4 ms, so ten connections already sustain far more than one hot wallet can use, because that wallet's operations are serial whatever the pool holds. Extra connections would only seat more waiters on the same lock, holding connections other wallets need.
+- **`DATABASE_ACQUIRE_TIMEOUT_MS`, default 1000.** How long a request waits for a free connection before giving up as a transient failure. Without it a request behind a full pool waits without bound. It is shorter than the lock limit on purpose, so a request that cannot even get a connection answers sooner than one already waiting on a lock.
+- **The worst case for one request** is therefore about the acquire wait plus the lock wait plus its own work, a little over three seconds at the defaults, and it ends as a `503` with `Retry-After` and not as a hang.
+- **A full pool is told apart from a lock timeout** in the log (`no database connection became free` against `55P03`), and both are warnings: the system is shedding load as designed.
+- **The pool's error is recognised by its message,** because `pg-pool` raises a bare `Error` with no code. A test provokes the real one, so an upgrade that rewords it fails there and not silently in production.
+- **What the burst test proves:** with four connections, a 200 ms connection wait and a 300 ms lock wait, a burst on a locked wallet ends every request as applied, rejected or `503`, never a `500` and never a hang. At most four requests ever waited on the lock, which is what shows the pool is the cap. Retrying everything with the same keys then applies each exactly once.
+- **Not measured:** how these numbers behave under sustained load. They are judgements, and the load test (`test:load`, optional) is where they would be revisited.
 
 ### Publishing events
 
@@ -201,11 +215,16 @@ Outcomes are in REQUIREMENTS section 3.11. `SIGTERM` stops polling, finishes in-
 
 ## HTTP API
 
-Implemented: `POST /wallets`, `GET /wallets/:walletId` and `GET /wallets/:walletId/ledger`. The transaction endpoints, the idempotency header and the authentication guard are issue #14.
+Implemented: the wallet endpoints, `POST /wagering/transactions`, and the two reads of a transaction (`GET /wagering/transactions/:transactionId` and `GET /providers/:providerId/wagering/transactions/:externalTransactionId`).
 
 - **Controllers are thin:** parse, call one use case, shape the answer. Parsing is by hand and collects every problem before refusing, so a provider fixes a request in one round trip. There is no validation library, because the shapes are small.
 - **`OpenWallet`** is one SQL transaction: the wallet first (the others point at it), then the `OPENING` transaction, its ledger entry and the events (FR-11). The unique index on player and currency decides a race, so 20 creations at once give one wallet and 19 conflicts.
 - **`QueryWallets`** reads through a `WalletReader` port that takes no lock (FR-67). The ledger is ordered by `wallet_version`, which is unique within a wallet and only grows, so a page is a range scan on `uq_ledger_wallet_version` and the cursor can mean "after version N".
+- **`SubmitWagerTransaction`** is the use case behind `POST /wagering/transactions`, and the SQS consumer will call the same one (§10). The `Idempotency-Key` header is the source of truth (FR-50), the response status follows the outcome (200, 202 or 422), and a replay has the status of the original.
+- **The edge repeats rules the domain also holds** (kind, a zero amount, the reference), so a provider is told which field to fix. A test checks that the two never disagree.
+- **Provider ids and keys are opaque but bounded:** 255 characters, no control characters. A NUL would otherwise reach PostgreSQL and come back as a `500`.
+- **`ProviderAuthGuard` lets every request through** and is attached to every business controller (ADR-0009). A test finds the controllers in the source and fails if one lacks it or is unregistered, so the real check, when it exists, replaces one class and nothing else.
+- **A stored `FAILED` transaction is a `500`,** not a `503`: it is terminal, so asking again returns the same answer. It is set by the retry worker (#19), and until then only a row inserted directly can show it.
 - **The cursor is opaque, not secret or signed.** Editing it starts from another place in the same wallet's ledger, which anyone could read from the start.
 - **Errors** are one envelope and one mapping, applied by a filter and by a middleware after the body parser ([ADR-0012](docs/adr/0012-errors-are-one-envelope-with-one-mapping.md)).
 - **Composition:** `src/app.ts` builds the application for `main` and for the tests alike, and `AppModule.register(config)` is the one place that knows both platform and business code. Entities and roles are passed in, because `platform` may not import business code.
@@ -336,7 +355,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 0 | Base: tooling, CI, platform, runtime contracts, documents | Done |
 | 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, settlement policy, integration events, payload hash | Done |
 | 2 | Schema: migrations, constraints, triggers, persistence records and mappers | Done |
-| 3 | Settlement use case and HTTP API | In progress: settlement use case and wallet API done; transaction endpoints not started |
+| 3 | Settlement use case and HTTP API | Done |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Not started |
 | 5 | Outbox and publisher | Not started |
 | 6 | Out-of-order references worker | Not started |

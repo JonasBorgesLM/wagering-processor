@@ -19,7 +19,12 @@ export class DatabaseModule implements OnApplicationShutdown {
           provide: MikroORM,
           inject: [APP_CONFIG],
           useFactory: (config: AppConfig) =>
-            MikroORM.init(createOrmConfig(config.databaseUrl, "migrations", entities)),
+            MikroORM.init(
+              createOrmConfig(config.databaseUrl, "migrations", entities, {
+                max: config.databasePoolMax,
+                acquireTimeoutMs: config.databaseAcquireTimeoutMs,
+              }),
+            ),
         },
       ],
       exports: [MikroORM],

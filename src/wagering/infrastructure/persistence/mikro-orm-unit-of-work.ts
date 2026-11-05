@@ -31,6 +31,7 @@ const OPERATION_KEYS = ["uq_wager_transactions_idempotency_key", "uq_wager_trans
  */
 const TRANSIENT_SQLSTATES = new Set(["55P03", "40P01", "40001", "57014", "57P01", "57P02", "57P03", "53300"]);
 const TRANSIENT_SQLSTATE_CLASS = "08";
+export const POOL_TIMEOUT_MESSAGE = "timeout exceeded when trying to connect";
 const TRANSIENT_NETWORK_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EPIPE", "ENOTFOUND"]);
 
 interface DatabaseError {
@@ -46,6 +47,11 @@ export function classifyPersistenceError(error: unknown): unknown {
   const state = typeof sqlState === "string" ? sqlState : typeof code === "string" ? code : "";
   const text = String(message ?? "");
 
+  // pg-pool reports a full pool with a bare Error and no code, so the message is all there is to go on. A test
+  // provokes the real error, so an upgrade that rewords it fails there and not silently in production.
+  if (text.includes(POOL_TIMEOUT_MESSAGE)) {
+    return new TransientFailureError("no database connection became free in time", { cause: error });
+  }
   if (
     state === "23505" &&
     (constraint === "uq_wallets_player_currency" || text.includes('"uq_wallets_player_currency"'))

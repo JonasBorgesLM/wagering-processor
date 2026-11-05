@@ -2,14 +2,18 @@ import { describe, expect, test } from "bun:test";
 import {
   type ArgumentsHost,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
   ServiceUnavailableException,
+  UnauthorizedException,
 } from "@nestjs/common";
 import {
   DuplicateOperationError,
   ExternalIdConflictError,
   IdempotencyConflictError,
   InvalidRequestError,
+  SettlementFailedError,
+  TransactionNotFoundError,
   TransientFailureError,
   WalletAlreadyExistsError,
   WalletNotFoundError,
@@ -35,7 +39,11 @@ describe("every situation has its own status and code", () => {
       "VALIDATION_ERROR",
     ],
     ["a wallet that does not exist", new WalletNotFoundError("x"), 404, "WALLET_NOT_FOUND"],
+    ["a transaction that does not exist", new TransactionNotFoundError("x"), 404, "TRANSACTION_NOT_FOUND"],
     ["a duplicate wallet", new WalletAlreadyExistsError("x"), 409, "WALLET_ALREADY_EXISTS"],
+    ["a transaction that ended in a failure", new SettlementFailedError("x"), 500, "SETTLEMENT_FAILED"],
+    ["a guard refusing: not authenticated", new UnauthorizedException(), 401, "UNAUTHORIZED"],
+    ["a guard refusing: not allowed", new ForbiddenException(), 403, "FORBIDDEN"],
     ["a key reused with another payload", new IdempotencyConflictError("x"), 409, "IDEMPOTENCY_CONFLICT"],
     ["an operation under another key", new ExternalIdConflictError("x"), 409, "EXTERNAL_ID_CONFLICT"],
     ["a transient failure", new TransientFailureError("x"), 503, "TRANSIENT_FAILURE"],
@@ -75,7 +83,7 @@ describe("every situation has its own status and code", () => {
       return `${status} ${body.error.code}`;
     });
     // The generic ones legitimately repeat (several errors are a VALIDATION_ERROR). The distinct business ones must not.
-    const business = cases.filter(([name]) => /wallet|key|operation|transient/.test(name));
+    const business = cases.filter(([name]) => /wallet|key|operation|transient|transaction/.test(name));
     const businessKeys = business.map(
       ([, error]) => `${toProblem(error).status} ${toProblem(error).body.error.code}`,
     );
@@ -240,6 +248,21 @@ describe("the filter", () => {
   test("including a 400 raised by the framework", () => {
     const { sent } = run(new BadRequestException("custom"));
     expect(sent.status).toBe(400);
+  });
+
+  test("a guard's refusal gets the envelope, so it looks like every other refusal", () => {
+    for (const [exception, status, code] of [
+      [new UnauthorizedException(), 401, "UNAUTHORIZED"],
+      [new ForbiddenException(), 403, "FORBIDDEN"],
+    ] as const) {
+      const { sent } = run(exception);
+      expect(sent.status).toBe(status);
+      expect((sent.body as { error: { code: string } }).error.code).toBe(code);
+    }
+  });
+
+  test("a stored failure is logged as an error, since someone has to look at it", () => {
+    expect(run(new SettlementFailedError("transaction x failed")).logged).toHaveLength(1);
   });
 
   test("except an unknown route, which gets the envelope like any caller's mistake", () => {

@@ -3,9 +3,13 @@ import { type DynamicModule, Module } from "@nestjs/common";
 import type { AppConfig } from "../../platform/config/config";
 import { APP_CONFIG } from "../../platform/config/config.module";
 import { OpenWallet } from "../application/open-wallet";
-import type { Clock, IdGenerator, UnitOfWork, WalletReader } from "../application/ports";
+import type { Clock, IdGenerator, TransactionReader, UnitOfWork, WalletReader } from "../application/ports";
+import { QueryTransactions } from "../application/query-transactions";
 import { QueryWallets } from "../application/query-wallets";
+import { SubmitWagerTransaction } from "../application/submit-wager-transaction";
+import { TransactionsController } from "./http/transactions.controller";
 import { WalletsController } from "./http/wallets.controller";
+import { MikroOrmTransactionReader } from "./persistence/mikro-orm-transaction-reader";
 import { MikroOrmUnitOfWork } from "./persistence/mikro-orm-unit-of-work";
 import { MikroOrmWalletReader } from "./persistence/mikro-orm-wallet-reader";
 import { SystemClock, UuidV7Generator } from "./system";
@@ -15,6 +19,10 @@ export const CLOCK = Symbol("CLOCK");
 export const ID_GENERATOR = Symbol("ID_GENERATOR");
 export const UNIT_OF_WORK = Symbol("UNIT_OF_WORK");
 export const WALLET_READER = Symbol("WALLET_READER");
+export const TRANSACTION_READER = Symbol("TRANSACTION_READER");
+
+/** Every controller that serves business routes, so a test can check that each carries the auth guard. */
+export const BUSINESS_CONTROLLERS = [WalletsController, TransactionsController];
 
 @Module({})
 export class WageringModule {
@@ -50,8 +58,25 @@ export class WageringModule {
           inject: [WALLET_READER],
           useFactory: (reader: WalletReader) => new QueryWallets(reader),
         },
+        {
+          provide: TRANSACTION_READER,
+          inject: [MikroORM, APP_CONFIG],
+          useFactory: (orm: MikroORM, config: AppConfig) =>
+            new MikroOrmTransactionReader(orm, limits(config)),
+        },
+        {
+          provide: QueryTransactions,
+          inject: [TRANSACTION_READER],
+          useFactory: (reader: TransactionReader) => new QueryTransactions(reader),
+        },
+        {
+          provide: SubmitWagerTransaction,
+          inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR],
+          useFactory: (uow: UnitOfWork, clock: Clock, ids: IdGenerator) =>
+            new SubmitWagerTransaction(uow, clock, ids),
+        },
       ],
-      controllers: options.api ? [WalletsController] : [],
+      controllers: options.api ? BUSINESS_CONTROLLERS : [],
       exports: [OpenWallet, QueryWallets, UNIT_OF_WORK, CLOCK, ID_GENERATOR],
     };
   }

@@ -18,6 +18,10 @@ export interface AppConfig {
   readonly lockTimeoutMs: number;
   /** The longest any statement may run, including its lock wait, so nothing holds a connection indefinitely (NFR-11). */
   readonly statementTimeoutMs: number;
+  /** Connections one process may hold. See ARCHITECTURE.md for why it is modest. */
+  readonly databasePoolMax: number;
+  /** How long a request waits for a free connection before giving up as a transient failure (NFR-11). */
+  readonly databaseAcquireTimeoutMs: number;
 }
 
 export class InvalidConfigError extends Error {
@@ -35,6 +39,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     shutdownTimeoutMs: positiveInteger(env, "SHUTDOWN_TIMEOUT_MS", 25_000),
     lockTimeoutMs: positiveInteger(env, "LOCK_TIMEOUT_MS", 2_000),
     statementTimeoutMs: positiveInteger(env, "STATEMENT_TIMEOUT_MS", 5_000),
+    databasePoolMax: positiveInteger(env, "DATABASE_POOL_MAX", 10),
+    databaseAcquireTimeoutMs: positiveInteger(env, "DATABASE_ACQUIRE_TIMEOUT_MS", 1_000),
   };
 }
 
