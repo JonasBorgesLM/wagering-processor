@@ -1,0 +1,18 @@
+# Dependencies and actions are pinned exactly (NFR-10). This keeps the pins from going stale.
+version: 2
+updates:
+  - package-ecosystem: bun
+    directory: /
+    target-branch: develop
+    schedule: { interval: weekly }
+    commit-message: { prefix: "chore(deps)" }
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule: { interval: weekly }
+    commit-message: { prefix: "ci(deps)" }
+  - package-ecosystem: docker
+    directory: /
+    target-branch: develop
+    schedule: { interval: weekly }
+    commit-message: { prefix: "chore(deps)" }
