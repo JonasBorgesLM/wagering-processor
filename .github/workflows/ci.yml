@@ -61,6 +61,8 @@ jobs:
             curl --fail --silent --show-error "http://localhost:$port/health/ready"
             echo
           done
+      - name: Three instances behave as one system
+        run: ./.github/scripts/check-instances.sh
       - if: failure()
         run: docker compose --profile app logs --tail 100
 

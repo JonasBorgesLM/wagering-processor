@@ -2,7 +2,9 @@ import { expect } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { createOrmConfig } from "../../src/platform/database/mikro-orm.config";
+import { OpenWallet } from "../../src/wagering/application/open-wallet";
 import type { TransactionContext, UnitOfWork } from "../../src/wagering/application/ports";
+import { QueryWallets } from "../../src/wagering/application/query-wallets";
 import {
   SubmitWagerTransaction,
   type SubmitWagerTransactionCommand,
@@ -11,6 +13,7 @@ import { Money } from "../../src/wagering/domain/money";
 import { WagerTransactionKind as Kind, WagerTransaction } from "../../src/wagering/domain/wager-transaction";
 import { Wallet } from "../../src/wagering/domain/wallet";
 import { MikroOrmUnitOfWork } from "../../src/wagering/infrastructure/persistence/mikro-orm-unit-of-work";
+import { MikroOrmWalletReader } from "../../src/wagering/infrastructure/persistence/mikro-orm-wallet-reader";
 import { wageringEntitySchemas } from "../../src/wagering/infrastructure/persistence/schemas";
 import { SystemClock, UuidV7Generator } from "../../src/wagering/infrastructure/system";
 import { createTestDatabase, type TestDatabase } from "./database";
@@ -31,6 +34,8 @@ export class SettlementWorld {
   readonly ids = new UuidV7Generator();
   readonly unitOfWork: UnitOfWork;
   readonly useCase: SubmitWagerTransaction;
+  readonly wallets: OpenWallet;
+  readonly queries: QueryWallets;
 
   private constructor(
     readonly orm: MikroORM,
@@ -39,6 +44,12 @@ export class SettlementWorld {
   ) {
     this.unitOfWork = new MikroOrmUnitOfWork(orm, this.clock, options);
     this.useCase = new SubmitWagerTransaction(this.unitOfWork, this.clock, this.ids);
+    this.wallets = new OpenWallet(this.unitOfWork, this.clock, this.ids);
+    this.queries = new QueryWallets(new MikroOrmWalletReader(orm, options));
+  }
+
+  databaseUrl(): string {
+    return this.database.url;
   }
 
   static async create(options = { lockTimeoutMs: 2_000, statementTimeoutMs: 5_000 }) {

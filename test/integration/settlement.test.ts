@@ -5,6 +5,7 @@ import {
   ExternalIdConflictError,
   IdempotencyConflictError,
   TransientFailureError,
+  WalletAlreadyExistsError,
   WalletNotFoundError,
 } from "../../src/wagering/application/errors";
 import { InvalidWagerTransactionError } from "../../src/wagering/domain/errors";
@@ -449,16 +450,14 @@ describe("locks are transient failures, and commit nothing", () => {
 
   // Only the two operation keys mean "restart and find the winner". Anything else restarted would hide a bug.
   test("a unique violation on anything else stays loud, and is not read as a duplicate operation", async () => {
-    const wallet = await world.openWallet("100.00");
-    const row = [randomUUID(), wallet.playerId];
-    const failure = await world
-      .sql(
-        "insert into wallets (id, player_id, currency, balance, version, created_at, updated_at) values (?, ?, 'BRL', 0, 1, now(), now())",
-        row,
-      )
-      .catch((error: unknown) => classifyPersistenceError(error));
+    const row = ["wager-consumer", randomUUID(), "a".repeat(64)];
+    const insert =
+      "insert into inbox_messages (consumer_name, message_id, payload_hash, received_at) values (?, ?, ?, now())";
+    await world.sql(insert, row);
+    const failure = await world.sql(insert, row).catch((error: unknown) => classifyPersistenceError(error));
     expect(failure).not.toBeInstanceOf(DuplicateOperationError);
-    expect(String(failure)).toContain("uq_wallets_player_currency");
+    expect(failure).not.toBeInstanceOf(WalletAlreadyExistsError);
+    expect(String(failure)).toContain("pk_inbox_messages");
   });
 
   test("a constraint violation is not transient: retrying cannot change its answer", async () => {

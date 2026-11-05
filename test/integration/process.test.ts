@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { TEST_ENV } from "../support/env";
+import { provisionQueues } from "../support/queues";
 
 // Runs the real entry point as a separate process, because signal handling and
 // startup failures do not exist inside an in-process test.
@@ -28,11 +29,7 @@ async function waitForLive(base: string): Promise<void> {
 }
 
 beforeAll(async () => {
-  const provision = Bun.spawn(["bun", "run", "scripts/provision-queues.ts"], {
-    env: { ...process.env, ...TEST_ENV },
-    stdout: "ignore",
-  });
-  expect(await provision.exited).toBe(0);
+  await provisionQueues();
 });
 
 afterEach(async () => {

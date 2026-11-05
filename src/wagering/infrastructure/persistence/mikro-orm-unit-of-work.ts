@@ -1,5 +1,9 @@
 import { LockMode, type MikroORM, type SqlEntityManager } from "@mikro-orm/postgresql";
-import { DuplicateOperationError, TransientFailureError } from "../../application/errors";
+import {
+  DuplicateOperationError,
+  TransientFailureError,
+  WalletAlreadyExistsError,
+} from "../../application/errors";
 import type { Clock, TransactionContext, UnitOfWork } from "../../application/ports";
 import { WagerTransactionKind, WagerTransactionStatus } from "../../domain/wager-transaction";
 import {
@@ -42,6 +46,12 @@ export function classifyPersistenceError(error: unknown): unknown {
   const state = typeof sqlState === "string" ? sqlState : typeof code === "string" ? code : "";
   const text = String(message ?? "");
 
+  if (
+    state === "23505" &&
+    (constraint === "uq_wallets_player_currency" || text.includes('"uq_wallets_player_currency"'))
+  ) {
+    return new WalletAlreadyExistsError(text);
+  }
   if (state === "23505" && OPERATION_KEYS.some((key) => key === constraint || text.includes(`"${key}"`))) {
     return new DuplicateOperationError(text);
   }
@@ -55,6 +65,34 @@ export function classifyPersistenceError(error: unknown): unknown {
   return error;
 }
 
+/**
+ * One database transaction with its limits set and its failures classified. The
+ * limits are `SET LOCAL`, so they end with the transaction and do not leak to
+ * the connection's next user. Shared by writes and reads, since a read waiting
+ * forever holds a connection just as a write does (NFR-11).
+ */
+export async function boundedTransaction<T>(
+  orm: MikroORM,
+  options: UnitOfWorkOptions,
+  work: (em: SqlEntityManager) => Promise<T>,
+): Promise<T> {
+  try {
+    return await orm.em.fork().transactional(async (em) => {
+      await em
+        .getConnection()
+        .execute(
+          "select set_config('lock_timeout', ?, true), set_config('statement_timeout', ?, true)",
+          [`${options.lockTimeoutMs}ms`, `${options.statementTimeoutMs}ms`],
+          "all",
+          em.getTransactionContext(),
+        );
+      return await work(em);
+    });
+  } catch (error) {
+    throw classifyPersistenceError(error);
+  }
+}
+
 export class MikroOrmUnitOfWork implements UnitOfWork {
   constructor(
     private readonly orm: MikroORM,
@@ -62,23 +100,8 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
     private readonly options: UnitOfWorkOptions,
   ) {}
 
-  async run<T>(work: (tx: TransactionContext) => Promise<T>): Promise<T> {
-    try {
-      return await this.orm.em.fork().transactional(async (em) => {
-        // SET LOCAL, so the limits end with this transaction and do not leak to the next user of the connection.
-        await em
-          .getConnection()
-          .execute(
-            "select set_config('lock_timeout', ?, true), set_config('statement_timeout', ?, true)",
-            [`${this.options.lockTimeoutMs}ms`, `${this.options.statementTimeoutMs}ms`],
-            "all",
-            em.getTransactionContext(),
-          );
-        return work(this.contextFor(em));
-      });
-    } catch (error) {
-      throw classifyPersistenceError(error);
-    }
+  run<T>(work: (tx: TransactionContext) => Promise<T>): Promise<T> {
+    return boundedTransaction(this.orm, this.options, (em) => work(this.contextFor(em)));
   }
 
   // Reads skip the identity map and writes are explicit statements, so the ORM's unit of work never flushes

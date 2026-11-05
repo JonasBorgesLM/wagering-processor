@@ -39,6 +39,13 @@ export interface TransactionContext {
   };
 }
 
+/** Reads that take no lock and change nothing. Committed state only. */
+export interface WalletReader {
+  findWallet(id: string): Promise<Wallet | undefined>;
+  /** Entries after the given wallet version, oldest first. Ordered by a column that never repeats within a wallet. */
+  ledgerAfter(walletId: string, afterVersion: number, limit: number): Promise<WalletLedgerEntry[]>;
+}
+
 export interface Clock {
   now(): Date;
 }

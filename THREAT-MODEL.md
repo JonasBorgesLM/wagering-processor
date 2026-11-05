@@ -79,7 +79,7 @@ queue ───SQS────▶ [ consumer ]┘                          │
 ### T-07 — Reading another player's data
 **Actor:** any HTTP caller. **Impact:** disclosure of balances and history.
 **Mitigation:** FR-58 closes only the rejection-response path.
-**Residual:** the `GET` endpoints are open to anyone with an id. UUIDs make guessing hard but are not access control.
+**Residual:** the `GET` endpoints are open to anyone with an id. UUIDs make guessing hard but are not access control. The ledger endpoint returns a wallet's whole history, paged, to anyone who holds its id.
 
 ### T-08 — Sensitive values reach logs
 **Actor:** log readers. **Impact:** financial data exposure.
@@ -98,8 +98,8 @@ queue ───SQS────▶ [ consumer ]┘                          │
 
 ### T-11 — Resource exhaustion
 **Actor:** any HTTP caller. **Impact:** connection pool or lock pile-up, huge payloads.
-**Mitigation:** SR-04, FR-60.
-**Residual:** no rate limit exists. Concurrent requests on one wallet can hold pool connections until `lock_timeout`.
+**Mitigation:** SR-04, FR-60, FR-64. Request bodies are capped at 16 KB, ledger pages at 200, path ids must be UUIDs, and every statement has a time limit (NFR-11).
+**Residual:** no rate limit exists. Concurrent requests on one wallet can hold pool connections until the lock timeout, and the wait for a pooled connection is not yet bounded (issue #14). The `Idempotency-Key` length bound arrives with the endpoint that takes it.
 
 ### T-12 — Idempotency key squatting
 **Actor:** malicious caller. **Impact:** using a provider's future key or id makes its real operation fail as a conflict.
