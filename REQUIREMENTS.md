@@ -73,7 +73,7 @@ confirmed event, no negative balance. At the end of every test:
 
 - **FR-20** `ROLLBACK` cannot reference `LOSS`, `OPENING` or another `ROLLBACK` (§7.3).
 - **FR-21** A reference resolves by `(providerId, referenceExternalTransactionId)` and must share player, wallet, currency and round (§7.2).
-- **FR-22** A reference can be reversed once, by any reversal kind. Full definition in §3.3.1 (`INT-06`).
+- **FR-22** A reference can be reversed once, by any reversal kind. Full definition in section 3.3.1 below (`INT-06`).
 - **FR-23** A round can hold several `BET` and `WIN` operations; only `externalTransactionId` is unique (`INT-08`).
 - **FR-24** A `WIN` referencing an already reversed `BET` is rejected (`INT-09`).
 - **FR-25** `REJECTED` never changes the balance and never creates a ledger entry (§7.6).
@@ -133,7 +133,7 @@ PENDING_REFERENCE ──▶ PROCESSED | REJECTED | FAILED
 Checks run under the wallet lock, in this order, so the same input always gets the same code:
 
 1. Wallet exists, otherwise `WALLET_NOT_FOUND` (nothing stored, `INT-12`).
-2. Idempotency: replay or conflict (§3.7).
+2. Idempotency: replay or conflict (section 3.7 below).
 3. Player matches the wallet: `PLAYER_WALLET_MISMATCH`.
 4. Currency matches the wallet: `CURRENCY_MISMATCH`.
 5. No reference given: go to step 11.
@@ -147,7 +147,7 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 
 ### 3.6 Out-of-order references (§7.1)
 
-- **FR-40** A scheduled worker retries `PENDING_REFERENCE` with exponential backoff, re-running the §3.5 order under the wallet lock.
+- **FR-40** A scheduled worker retries `PENDING_REFERENCE` with exponential backoff, re-running the settlement order of section 3.5 under the wallet lock.
 - **FR-41** Default backoff starts at 5s, doubles, and caps at 5 min. TTL is 1 h and configurable. One hour outlasts ordinary provider and queue redelivery without leaving a reversal open for a whole gaming session (`INT-13`).
 - **FR-42** On expiry the transaction becomes `REJECTED` with `REFERENCE_NOT_FOUND`, and `WagerTransactionRejected` is published.
 - **FR-43** Balance is checked at settlement, not at arrival.
@@ -242,24 +242,37 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 
 - **SR-01** Logs carry correlation ids and no sensitive data or full financial payloads (§12).
 - **SR-02** Every provider field from the queue passes the same domain validation as HTTP (§2).
-- **SR-03** Without authentication, any caller can act as any provider. This is accepted by §2 and is **not** mitigated by anything else here; the extension point and intended design are documented in `ARCHITECTURE.md`.
+- **SR-03** Without authentication, any caller can act as any provider. This is accepted by §2 and is **not** mitigated by anything else here; the extension point and intended design are in [ADR-0009](docs/adr/0009-authentication-is-a-documented-extension-point.md).
+- **SR-04** Input is bounded: request body size, `Idempotency-Key` and identifier lengths, ledger page size. No unbounded value reaches a query, an index or a log.
+- **SR-05** Domain rules apply to whoever submits: a provider cannot move another player's money by naming their wallet (`PLAYER_WALLET_MISMATCH`). This is a consistency check on the payload and **not** authorization: a caller who knows both ids passes it.
+- **SR-06** The ledger is append-only for the application role, enforced by trigger. A database superuser can disable the trigger; reconciliation can detect some such changes, not prevent them.
 
 ---
 
 ## 5. Non-functional requirements
 
-- **NFR-01** Bun 1.x, strict TypeScript, NestJS, PostgreSQL, SQS via LocalStack or MiniStack, Docker Compose, MikroORM, reversible migrations (§4).
+- **NFR-01** Bun 1.x, strict TypeScript, NestJS, PostgreSQL, SQS via MiniStack ([ADR-0008](docs/adr/0008-ministack-is-the-local-sqs.md)), Docker Compose, MikroORM, reversible migrations (§4).
 - **NFR-02** Enforced by the schema, not only by code (§5.9): wallet uniqueness, non-negative balance, idempotency and external-id uniqueness, one ledger entry per transaction, single `PROCESSED` reversal per reference (partial unique index on `reference_transaction_id` for `REFUND` and `ROLLBACK`), ledger immutability including `TRUNCATE`.
 - **NFR-03** No global lock. The concurrency unit is `walletId` (§5.6, §8). Correct with three or more instances (§5.8).
 - **NFR-04** Inbox, financial change, ledger and outbox share one SQL transaction. Ack and publication happen only after commit (§5.4, §6.5, §10).
 - **NFR-05** The broker's ordering and dedup are optimizations, never the guarantee (§5.3, §8).
 - **NFR-06** Metrics: transactions by status, duplicates, retries, DLQ messages, lock conflicts, outbox lag, processing latency (§12).
 - **NFR-07** All required tests in §13 run against real PostgreSQL and real LocalStack or MiniStack, with real parallelism.
-- **NFR-08** All project text, code and commits are in English. Gitflow with Conventional Commits.
+- **NFR-08** All project text, code and commits are in English. Gitflow with Conventional Commits, checked on every commit and on the PR title.
+- **NFR-09** Dependencies point inward: `domain` imports only itself; `application` imports domain and its own ports, never an adapter or framework. Checked by `check-boundaries.sh`, which also fails if it analysed nothing.
+- **NFR-10** Every dependency and CI action is pinned exactly; the lockfile is frozen on install.
 
 ---
 
-## 6. Interpretations
+## 6. Integration requirements
+
+- **IR-01** SQS delivers at least once and may reorder between groups. Nothing here relies on exactly-once delivery or on the broker's deduplication window.
+- **IR-02** The broker honours per-group FIFO hold, deduplication ids, `ChangeMessageVisibility` and `maxReceiveCount` redrive. Each is checked against the real emulator in `test/integration/sqs-runtime.test.ts`, because emulators can differ from AWS.
+- **IR-03** Event consumers deduplicate by `eventId` and order by `walletVersion`.
+
+---
+
+## 7. Interpretations
 
 | Id | Decision | README basis | Option not taken |
 | --- | --- | --- | --- |
@@ -285,7 +298,7 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 
 ---
 
-## 7. Out of scope
+## 8. Out of scope
 
 - Authentication implementation (§2): decision and design go in `ARCHITECTURE.md`.
 - Double-entry ledger, OpenTelemetry and dashboards (§6.4, §12): optional.
