@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: base only.** The platform layer, tooling and runtime contract tests exist and pass. Everything under `src/wagering` and `src/messaging` below is **designed, not implemented**: signatures have no bodies yet. See [Roadmap](#roadmap).
+> **Status: early.** The platform layer, tooling, runtime contract tests and the `Money` value object exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
 
 ---
 
@@ -49,8 +49,10 @@ class Money {
   negate(): Money;                              // may be negative internally (FR-04)
   isZero(): boolean; isPositive(): boolean; isNegative(): boolean;
   isLessThan(other: Money): boolean;
-  equals(other: Money): boolean;
+  equals(other: Money): boolean;                // false across currencies; ordering and arithmetic raise
+  fitsStorage(): boolean;                       // a sum of valid amounts can outgrow numeric(20,2) (FR-05)
   toJSON(): MoneyProps;
+  toString(): string;
 }
 
 class Wallet {
@@ -268,8 +270,8 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 
 | Phase | Scope | Status |
 | --- | --- | --- |
-| 0 | Base: tooling, CI, platform, runtime contracts, documents | In review |
-| 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, `SettlementPolicy` | Not started |
+| 0 | Base: tooling, CI, platform, runtime contracts, documents | Done |
+| 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, `SettlementPolicy` | In progress: `Money` done |
 | 2 | Schema: migrations, constraints, triggers | Not started |
 | 3 | Settlement use case and HTTP API | Not started |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Not started |
