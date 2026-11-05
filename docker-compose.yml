@@ -17,6 +17,12 @@ x-app: &app
   depends_on:
     setup:
       condition: service_completed_successfully
+  # Without this, `up --wait` returns as soon as the process starts, before it listens.
+  healthcheck:
+    test: ["CMD", "bun", "-e", "const r = await fetch('http://localhost:3000/health/ready'); process.exit(r.ok ? 0 : 1)"]
+    interval: 2s
+    timeout: 3s
+    retries: 30
   # Longer than SHUTDOWN_TIMEOUT_MS, so Docker never kills a draining instance.
   stop_grace_period: 30s
   profiles: [app]
@@ -52,6 +58,7 @@ services:
       postgres: { condition: service_healthy }
       sqs: { condition: service_healthy }
     restart: "no"
+    healthcheck: { disable: true }
     stop_grace_period: 1s
 
   app-1:
