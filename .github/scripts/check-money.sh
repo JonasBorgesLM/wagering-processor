@@ -18,7 +18,12 @@ if [ "${#dirs[@]}" -eq 0 ]; then
 fi
 
 pattern='parseFloat|parseInt|Number\(|\.toFixed\(|Math\.round|(amount|balance|money|Balance|Amount)[A-Za-z]*\??: *number|(numeric|decimal)\([^,)]*\)|double precision|\breal\b|\bmoney\b +(not null|null|default)'
-hits=$(grep -rnE "$pattern" "${dirs[@]}" --include='*.ts' | grep -v 'money-check: not-money' || true)
+# Lines that are only a comment are skipped: a comment declares no type, and the
+# English word "real" otherwise matches the SQL type `real`. A comment trailing
+# code on the same line is still scanned, because the code part is.
+hits=$(grep -rnE "$pattern" "${dirs[@]}" --include='*.ts' \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
+  | grep -v 'money-check: not-money' || true)
 
 if [ -n "$hits" ]; then
   printf '%s\n' "$hits"
