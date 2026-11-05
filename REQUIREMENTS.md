@@ -170,6 +170,21 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 
 - **FR-50** `Idempotency-Key` is mandatory over HTTP; over SQS it is `data.idempotencyKey`. Both feed the same use case.
 - **FR-51** `payloadHash` = SHA-256 of canonical JSON with sorted keys over `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money.amount`, `money.currency`, and `referenceExternalTransactionId` when present. The key, `messageId`, `occurredAt` and transport metadata are excluded, so a replay matches across channels.
+
+  **The algorithm**, which is part of the stored data (`payloadHash` in `src/wagering/application/payload-hash.ts`):
+
+  1. Build an object of those fields, with `money` as `{ "amount", "currency" }` and the amount as its fixed two-decimal string.
+  2. Serialize it as JSON with the keys of every object sorted ascending and no whitespace. A field that is absent is left out.
+  3. Encode as UTF-8, hash with SHA-256, and write the digest as 64 lowercase hex characters.
+
+  Ids are opaque: nothing is trimmed, case-folded or Unicode-normalized, and a provider that resends an id must resend the same text. Anything but a string or a plain object where a field belongs is refused, never coerced, because a number that slipped past validation would otherwise hash as text.
+
+  Changing the field set, the order or the encoding makes every stored hash disagree with its own replay and report a false conflict, so it is a breaking change that needs a migration. A vector to check an implementation against, from the sample message of challenge section 10:
+
+  ```text
+  {"externalTransactionId":"transaction-123","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"},"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","providerId":"provider-a","roundId":"round-987","walletId":"0192f291-27dd-7d3f-8071-5f8685deef37"}
+  → 629836932b79106b99523d06a1e7fa80689b0ea1e1c47aa3f0a5a2c87d0c4344
+  ```
 - **FR-52** Same key and same hash returns the original result with `idempotentReplay: true`: status, `failureCode` and balance as observed then. It publishes no event and changes nothing.
 - **FR-53** Same key with a different hash is `IDEMPOTENCY_CONFLICT`, never a replay.
 - **FR-54** Same `(providerId, externalTransactionId)` with a different key is `EXTERNAL_ID_CONFLICT`, since references and lookups depend on that pair being unique (`INT-14`).
@@ -250,6 +265,33 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 - **FR-90** Events are written in the same SQL transaction as the state change and published only by the outbox worker, to a dedicated queue `wagering-events.fifo` (`INT-19`).
 - **FR-91** Publication is at-least-once, with no attempt limit. `eventId` is the consumer's dedup key. `walletVersion` lets consumers restore balance order, since retries can reorder events.
 
+#### 3.12.1 Event contract, version 1
+
+Every event is stored in the outbox and published as this envelope. `eventType` and `version` belong to the event's type, so a payload cannot be emitted under the wrong name or version.
+
+```json
+{
+  "eventId": "…", "eventType": "WalletBalanceChanged", "aggregateId": "<walletId>",
+  "correlationId": "…", "causationId": "…", "occurredAt": "2026-11-05T12:00:00.000Z",
+  "version": 1, "data": { }
+}
+```
+
+`causationId` is omitted when there is none. `data` is plain JSON, with money as `{ "amount", "currency" }` and never a `Money` or a number.
+
+| Event | `data` |
+| --- | --- |
+| `WagerTransactionProcessed` | the transaction facts¹, `balance` (after the operation; for a `LOSS`, the balance it saw), `referenceTransactionId` (when linked), `processedAt` |
+| `WagerTransactionRejected` | the transaction facts¹, `failureCode`, `balance` (absent when the response withholds it, FR-58) |
+| `WagerTransactionPendingReference` | the transaction facts¹, `referenceExternalTransactionId`, `balance` |
+| `WalletBalanceChanged` | `walletId`, `transactionId`, `direction`, `money`, `balanceBefore`, `balanceAfter`, `walletVersion` |
+
+¹ `transactionId`, `providerId`, `externalTransactionId`, `walletId`, `playerId`, `roundId`, `gameId`, `kind`, `money`.
+
+- **FR-92** An event is built only from the state it describes. A transaction in the wrong status, a ledger entry from another wallet, and an entry that is not the wallet's latest change are refused, so an event can never publish a balance the wallet no longer has.
+- **FR-93** The aggregate id of every event is the wallet id (`INT-23`).
+- **FR-94** Adding a field to `data` keeps the version; removing, renaming or retyping one raises it, and the old version keeps being understood by consumers until they move.
+
 ---
 
 ## 4. Security requirements
@@ -314,6 +356,7 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 | `INT-20` | `FAILED` carries its own code, `SETTLEMENT_FAILED` | §7.2 wants a stable code on every terminal outcome, and `FAILED` is not a business rejection | Reusing a business code: the provider would read our fault as its own payload error |
 | `INT-21` | An `OPENING` derives its keys from the wallet id | One opening per wallet is then enforced by the unique idempotency key in the schema, not only by code | Random keys: a second opening would be a different row, and nothing would refuse it |
 | `INT-22` | `CURRENCY_MISMATCH` carries no balance | An observed balance is recorded in the transaction's own currency, and the wallet's is in another | Converting or storing the wallet's currency alongside: a second currency field on every row for one rejection |
+| `INT-23` | Every event's aggregate id is the wallet id, including the transaction events | The outbox uses it as the FIFO message group (ADR-0007), and a wallet is the unit of ordering and concurrency (§8) | The transaction id: events of one wallet would then spread over many groups and lose their order |
 
 ---
 

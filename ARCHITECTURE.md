@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction` and the settlement policy exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
+> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, the settlement policy, the integration events and the payload hash exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
 
 ---
 
@@ -261,6 +261,13 @@ SIGTERM
 
 Shutdown is an optimization of recovery, not the guarantee. `kill -9` must also be safe, and the failure suite proves that.
 
+### Events and the payload hash
+
+Both are contracts with the outside, so each is pinned by a test. The hash vectors were computed with Python, a tool independent of this code. The event envelopes are pinned by the expected JSON written out in the test: that fixes the format, but it was written by hand and not computed.
+
+- **Integration events** (`wagering-events.ts`) extend an abstract `IntegrationEvent<T>` whose `eventType` and `version` belong to the class. The payload is frozen and holds plain JSON only. Their shape is REQUIREMENTS section 3.12.1.
+- **The payload hash** (`application/payload-hash.ts`) sits in `application` rather than `domain` because it needs `node:crypto` and the domain imports only itself. It is where HTTP and SQS converge, which is the reason it exists: the same operation must hash the same over both.
+
 ## Decisions the challenge asks to justify
 
 | Topic | Choice | Record |
@@ -288,7 +295,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 0 | Base: tooling, CI, platform, runtime contracts, documents | Done |
-| 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, settlement policy | In progress: all done except integration events and the payload hash (#8) |
+| 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, settlement policy, integration events, payload hash | Done |
 | 2 | Schema: migrations, constraints, triggers | Not started |
 | 3 | Settlement use case and HTTP API | Not started |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Not started |
