@@ -38,3 +38,15 @@ export class InvalidLedgerEntryError extends DomainError {
   readonly code = "INVALID_LEDGER_ENTRY";
   override readonly name = "InvalidLedgerEntryError";
 }
+
+/** A transition the lifecycle does not allow. Always a programming error, never a business path (FR-30). */
+export class InvalidTransactionStateError extends DomainError {
+  readonly code = "INVALID_TRANSACTION_STATE";
+  override readonly name = "InvalidTransactionStateError";
+}
+
+/** A transaction that is malformed as built, as opposed to one the business rules refuse (see RejectionCode). */
+export class InvalidWagerTransactionError extends DomainError {
+  readonly code = "INVALID_WAGER_TRANSACTION";
+  override readonly name = "InvalidWagerTransactionError";
+}
