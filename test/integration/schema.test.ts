@@ -127,7 +127,7 @@ describe("migrations (NFR-01)", () => {
       "wallets",
     ];
     expect(await tables()).toEqual(all);
-    await orm.migrator.down();
+    await orm.migrator.down({ to: 0 });
     expect(await tables()).toEqual([]);
     await orm.migrator.up();
     expect(await tables()).toEqual(all);
@@ -608,5 +608,135 @@ describe("outbox_messages (§11)", () => {
   test("the claim query can use the partial index on due rows", async () => {
     const rows = await run("select indexdef from pg_indexes where indexname = 'ix_outbox_due'");
     expect(rows[0]?.indexdef).toContain("WHERE (published_at IS NULL)");
+  });
+});
+
+async function refusedByTrigger(message: RegExp, attempt: () => Promise<unknown>): Promise<void> {
+  const error = await attempt().then(
+    () => undefined,
+    (reason: unknown) => reason,
+  );
+  expect(String(error)).toMatch(message);
+}
+
+describe("the ledger is append-only (§5.5, SR-06)", () => {
+  async function entry() {
+    const w = await wallet();
+    const t = await transaction(w.id as string);
+    const row = entryRow(w.id as string, t.id as string);
+    await insert("wallet_ledger_entries", row);
+    return row;
+  }
+
+  async function stillThere(row: Row) {
+    const rows = await run("select amount from wallet_ledger_entries where id = ?", [row.id]);
+    expect(rows[0]?.amount).toBe("25.00");
+  }
+
+  test("UPDATE is refused and changes nothing", async () => {
+    const row = await entry();
+    await refusedByTrigger(/append-only: UPDATE refused/, () =>
+      run("update wallet_ledger_entries set amount = 1 where id = ?", [row.id]),
+    );
+    await stillThere(row);
+  });
+
+  test("DELETE is refused and changes nothing", async () => {
+    const row = await entry();
+    await refusedByTrigger(/append-only: DELETE refused/, () =>
+      run("delete from wallet_ledger_entries where id = ?", [row.id]),
+    );
+    await stillThere(row);
+  });
+
+  // A row trigger would not fire here, which is the failure mode this issue names.
+  test("TRUNCATE is refused and changes nothing", async () => {
+    const row = await entry();
+    await refusedByTrigger(/append-only: TRUNCATE refused/, () => run("truncate wallet_ledger_entries"));
+    await stillThere(row);
+  });
+
+  test("TRUNCATE cannot reach it by cascading from a parent table", async () => {
+    const row = await entry();
+    await refusedByTrigger(/append-only: TRUNCATE refused/, () => run("truncate wallets cascade"));
+    await refusedByTrigger(/append-only: TRUNCATE refused/, () => run("truncate wager_transactions cascade"));
+    await stillThere(row);
+  });
+
+  test("the row an entry hangs from cannot be deleted either", async () => {
+    const row = await entry();
+    await refusedBy("fk_wager_transactions_wallet", () =>
+      run("delete from wallets where id = ?", [row.wallet_id]),
+    );
+    await stillThere(row);
+  });
+
+  test("appending still works", async () => {
+    await entry();
+  });
+});
+
+describe("a terminal transaction does not change (§6.3, FR-30)", () => {
+  const terminal: Array<[string, Row]> = [
+    ["PROCESSED", {}],
+    ["REJECTED", { status: "REJECTED", failure_code: "INSUFFICIENT_FUNDS", processed_at: null }],
+    ["FAILED", { status: "FAILED", failure_code: "SETTLEMENT_FAILED", processed_at: null }],
+  ];
+
+  test.each(terminal)(
+    "%s refuses an update, of its status or of anything else",
+    async (status, overrides) => {
+      const w = await wallet();
+      const t = await transaction(w.id as string, overrides);
+      const refused = new RegExp(`is ${status} and terminal: UPDATE refused`);
+      await refusedByTrigger(refused, () =>
+        run("update wager_transactions set status = 'PENDING' where id = ?", [t.id]),
+      );
+      await refusedByTrigger(refused, () =>
+        run("update wager_transactions set game_id = 'other' where id = ?", [t.id]),
+      );
+      const rows = await run("select status, game_id from wager_transactions where id = ?", [t.id]);
+      expect(rows[0]).toEqual({ status, game_id: "game-1" });
+    },
+  );
+
+  // §7.9: a rejection stays auditable. It has no ledger entry, so no foreign key would protect it.
+  test.each(terminal)("%s refuses a delete", async (status, overrides) => {
+    const w = await wallet();
+    const t = await transaction(w.id as string, overrides);
+    await refusedByTrigger(new RegExp(`is ${status} and terminal: DELETE refused`), () =>
+      run("delete from wager_transactions where id = ?", [t.id]),
+    );
+  });
+
+  // Positive control: the lifecycle's own moves must keep working.
+  test("a waiting transaction can still settle, and the change is stored", async () => {
+    const w = await wallet();
+    const bet = await transaction(w.id as string);
+    const waiting = await transaction(w.id as string, {
+      kind: "REFUND",
+      reference_external_transaction_id: bet.external_transaction_id,
+      status: "PENDING_REFERENCE",
+      processed_at: null,
+    });
+    await run(
+      "update wager_transactions set status = 'PROCESSED', processed_at = ?, reference_transaction_id = ? where id = ?",
+      [NOW, bet.id, waiting.id],
+    );
+    const rows = await run("select status from wager_transactions where id = ?", [waiting.id]);
+    expect(rows[0]?.status).toBe("PROCESSED");
+  });
+
+  test("a waiting transaction can be removed, since nothing has settled", async () => {
+    const w = await wallet();
+    const waiting = await transaction(w.id as string, {
+      kind: "REFUND",
+      reference_external_transaction_id: "not-yet",
+      status: "PENDING_REFERENCE",
+      processed_at: null,
+    });
+    await run("delete from wager_transactions where id = ?", [waiting.id]);
+    const rows = await run("select count(*)::int as n from wager_transactions where id = ?", [waiting.id]);
+    expect(rows[0]?.n).toBe(0);
   });
 });
