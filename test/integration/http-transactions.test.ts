@@ -500,7 +500,18 @@ describe("a burst larger than the pool (issue #14)", () => {
 
     // Release the lock and send everything again with the same keys: safe, and each ends applied exactly once.
     await release();
-    const retried = await Promise.all(settled.map(({ request }) => submit(small.url, request)));
+    // The pool is still small, so a second burst may be told to come back too: that is the contract (503 + Retry-After),
+    // and a client follows it. Each request keeps its key, so however many attempts it takes it is applied once.
+    const retried = await Promise.all(
+      settled.map(async ({ request }) => {
+        let response = await submit(small.url, request);
+        for (let attempt = 0; response.status === 503 && attempt < 20; attempt++) {
+          await Bun.sleep(100);
+          response = await submit(small.url, request);
+        }
+        return response;
+      }),
+    );
     for (const response of retried) expect(response.status).toBe(200);
 
     expect(await world.walletState(hot.walletId)).toEqual({ balance: "976.00", version: 25 });
