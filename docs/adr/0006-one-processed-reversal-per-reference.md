@@ -1,7 +1,7 @@
 # ADR-0006: A reference accepts one processed reversal, of any kind
 
 ## Status
-Accepted
+Accepted. Confirmed by the project owner on 2026-11-05.
 
 ## Context
 The challenge's rule 7.4 forbids reversing a reference twice "by the same type of operation". The §7 table says each reversal happens "once". §3 forbids duplicate credit. Read alone, 7.4 leaves room for this:

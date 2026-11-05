@@ -19,6 +19,10 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 
 **Not verified yet:** draining with messages in flight, because the consumer does not exist.
 
+## A rule worth knowing first
+
+A `BET` can be reversed **once**, by `REFUND` or by `ROLLBACK`, never both. The challenge only forbids repeating the same type, but allowing both would credit the stake twice. This is a deliberate, confirmed reading: see [ADR-0006](docs/adr/0006-one-processed-reversal-per-reference.md).
+
 ## Requirements
 
 - [Bun](https://bun.sh) 1.4 or later

@@ -92,6 +92,14 @@ confirmed event, no negative balance. At the end of every test:
 The README does not explain the business difference beyond this table, so no
 further meaning is assumed.
 
+**Decision, confirmed by the project owner on 2026-11-05:** a reference accepts **one `PROCESSED` reversal in total**, whether `REFUND` or `ROLLBACK`. The challenge's rule 7.4 only forbids repeating the same type, but it does not permit mixing types, and allowing the mix would create money:
+
+```text
+BET 80 → -80 | REFUND → +80 | ROLLBACK of the same BET → +80 = 80 created from nothing
+```
+
+So once a `BET` is refunded it cannot also be rolled back, and the reverse, even though a literal reading of rule 7.4 alone might suggest otherwise. Reasoning and rejected options: [ADR-0006](docs/adr/0006-one-processed-reversal-per-reference.md).
+
 - **FR-26** A reference must have the same provider, player, wallet, currency and round. Lookup is scoped to the provider, so another provider's transaction is simply not found: it waits and expires as `REFERENCE_NOT_FOUND`.
 - **FR-27** Only a `PROCESSED` reversal uses up the reference. A `REJECTED` or `PENDING_REFERENCE` reversal does not, so a `ROLLBACK` refused for lack of funds can be sent again under a new `externalTransactionId`.
 - **FR-28** Reversals are not cascading: reversing a `BET` leaves its `WIN` in place, and rolling back a `REFUND` does not restore the `BET` as reversible.

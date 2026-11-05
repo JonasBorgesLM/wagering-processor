@@ -259,7 +259,7 @@ Shutdown is an optimization of recovery, not the guarantee. `kill -9` must also 
 - **No authentication.** Anyone reaching the API can act as any provider (T-06). Do not expose it.
 - **Throughput per wallet is serial** by design, and bounded by settlement time.
 - **Late `BET` after an expired `ROLLBACK`** is applied, with no tombstone (REQUIREMENTS section 3.6).
-- **`REFUND`, `ROLLBACK` of it, then `ROLLBACK` of the `BET`** is refused and needs an operator (ADR-0006).
+- **One reversal per reference, of any kind.** This reads the challenge's rule 7.4 more strictly than its literal text on purpose, because mixing `REFUND` and `ROLLBACK` on one `BET` would credit it twice. The owner confirmed this decision. As a consequence, `REFUND`, `ROLLBACK` of it, then `ROLLBACK` of the `BET` is refused and needs an operator (ADR-0006).
 - **Emulator, not AWS:** contract tests cover the SQS behaviour relied on, and do not prove parity with AWS (ADR-0008).
 
 ## Roadmap

@@ -15,7 +15,7 @@ New records start from [`TEMPLATE.md`](TEMPLATE.md).
 | [`0003`](0003-wallet-row-lock-is-taken-before-any-insert.md) | Concurrency uses a wallet row lock, taken before any insert | Accepted | — |
 | [`0004`](0004-money-is-bigint-minor-units.md) | Money is held as bigint minor units in the domain | Accepted | — |
 | [`0005`](0005-idempotency-is-enforced-by-two-unique-keys.md) | Idempotency rests on two unique keys and a stored result | Accepted | — |
-| [`0006`](0006-one-processed-reversal-per-reference.md) | A reference accepts one processed reversal, of any kind | Accepted | — |
+| [`0006`](0006-one-processed-reversal-per-reference.md) | A reference accepts one processed reversal, of any kind | Accepted, confirmed by the owner | — |
 | [`0007`](0007-outbox-claims-with-a-lease.md) | Outbox publishers claim rows with a lease | Accepted | — |
 | [`0008`](0008-ministack-is-the-local-sqs.md) | MiniStack is the local SQS | Accepted | — |
 | [`0009`](0009-authentication-is-a-documented-extension-point.md) | Authentication is a documented extension point, not implemented | Accepted | — |
@@ -34,5 +34,4 @@ New records start from [`TEMPLATE.md`](TEMPLATE.md).
 
 ## Open questions
 
-- **`INT-06` confirmation:** the owner has been asked to confirm the reading in ADR-0006 on PR #1.
 - **Delivery format:** the challenge does not state a deadline or how to submit.
