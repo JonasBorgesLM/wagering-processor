@@ -14,6 +14,10 @@ export interface AppConfig {
   readonly awsRegion: string;
   readonly sqsEndpoint: string;
   readonly shutdownTimeoutMs: number;
+  /** How long a settlement waits for a wallet lock before giving up as a transient failure. See ARCHITECTURE.md. */
+  readonly lockTimeoutMs: number;
+  /** The longest any statement may run, including its lock wait, so nothing holds a connection indefinitely (NFR-11). */
+  readonly statementTimeoutMs: number;
 }
 
 export class InvalidConfigError extends Error {
@@ -29,6 +33,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     awsRegion: required(env, "AWS_REGION"),
     sqsEndpoint: required(env, "SQS_ENDPOINT"),
     shutdownTimeoutMs: positiveInteger(env, "SHUTDOWN_TIMEOUT_MS", 25_000),
+    lockTimeoutMs: positiveInteger(env, "LOCK_TIMEOUT_MS", 2_000),
+    statementTimeoutMs: positiveInteger(env, "STATEMENT_TIMEOUT_MS", 5_000),
   };
 }
 

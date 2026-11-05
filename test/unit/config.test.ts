@@ -27,6 +27,16 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...valid, [name]: undefined })).toThrow(`${name} is required`);
   });
 
+  test("has lock and statement limits by default, and takes them from the environment", () => {
+    expect(loadConfig(valid)).toMatchObject({ lockTimeoutMs: 2_000, statementTimeoutMs: 5_000 });
+    expect(loadConfig({ ...valid, LOCK_TIMEOUT_MS: "150", STATEMENT_TIMEOUT_MS: "900" })).toMatchObject({
+      lockTimeoutMs: 150,
+      statementTimeoutMs: 900,
+    });
+    expect(() => loadConfig({ ...valid, LOCK_TIMEOUT_MS: "0" })).toThrow(InvalidConfigError);
+    expect(() => loadConfig({ ...valid, STATEMENT_TIMEOUT_MS: "soon" })).toThrow(InvalidConfigError);
+  });
+
   test.each(["0", "-1", "1.5", "abc", "1e3"])("rejects PORT=%s", (port) => {
     expect(() => loadConfig({ ...valid, PORT: port })).toThrow(InvalidConfigError);
   });
