@@ -66,6 +66,16 @@ if [ -n "$REQUIREMENTS_FILE" ] && [ -f "$REQUIREMENTS_FILE" ]; then
                  --include='*.md' --include='*.go' --include='*.ts' --include='*.tsx' \
                  --include='*.js' --include='*.py' --include='*.yml' --exclude-dir=node_modules \
                  . 2>/dev/null | grep -oE "($ID_PREFIXES)-[0-9]{2}" | sort -u)
+  # An id defined twice makes every citation of it ambiguous, and the check below would still pass: it only asks
+  # whether an id exists. This was found by hand, when two new requirements reused numbers from reconciliation.
+  duplicated=$(grep -oE "^- \*\*($ID_PREFIXES)-[0-9]{2}" "$REQUIREMENTS_FILE" | sed -E 's/^- \*\*//' | sort | uniq -d | tr '\n' ' ')
+  if [ -n "$duplicated" ]; then
+    fail "requirement ids defined more than once in $REQUIREMENTS_FILE: $duplicated"
+    note "Give each requirement its own number; a citation of a repeated id points at two things."
+  else
+    pass "no requirement id is defined twice"
+  fi
+
   dangling=""
   for id in $referenced; do printf '%s\n' "$defined" | grep -qx "$id" || dangling="$dangling $id"; done
   if [ -n "$dangling" ]; then
