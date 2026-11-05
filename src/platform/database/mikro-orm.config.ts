@@ -1,10 +1,18 @@
 import { Migrator } from "@mikro-orm/migrations";
-import { defineConfig } from "@mikro-orm/postgresql";
+import { defineConfig, type EntitySchema } from "@mikro-orm/postgresql";
 
-export function createOrmConfig(databaseUrl: string, migrationsPath = "migrations") {
+/**
+ * `entities` is passed in rather than imported: platform knows no business code,
+ * so whatever composes the application says which records the ORM maps.
+ */
+export function createOrmConfig(
+  databaseUrl: string,
+  migrationsPath = "migrations",
+  entities: EntitySchema[] = [],
+) {
   return defineConfig({
     clientUrl: databaseUrl,
-    entities: [],
+    entities,
     discovery: { warnWhenNoEntities: false },
     extensions: [Migrator],
     migrations: {

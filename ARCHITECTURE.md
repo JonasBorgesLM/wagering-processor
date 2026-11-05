@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, the settlement policy, the integration events, the payload hash and the schema exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
+> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, the settlement policy, the integration events, the payload hash, the schema and the persistence mappers exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
 
 ---
 
@@ -205,6 +205,17 @@ The schema enforces what must hold even if the code is wrong (NFR-02). It is in 
 
 `wallet_version` on the ledger gives a stable order per wallet, the opaque cursor, and one more barrier: two entries cannot claim the same version.
 
+### Records and mappers
+
+Persistence is in `infrastructure/persistence` (ADR-0002): `records.ts` holds the shape of each table as plain data, `schemas.ts` maps them with `EntitySchema`, and `mappers.ts` converts to and from the domain. Nothing above infrastructure imports any of it.
+
+- **Amounts are strings in a record and `Money` in the domain.** The ORM reads `numeric(20,2)` as an exact string, and the mapper builds `Money` from it. A stored amount that is not two decimals is an error and is never repaired.
+- **A stored kind, status, direction or failure code that the code does not know is an error** (`PersistenceMappingError`), because the CHECKs make it unreachable unless the schema and the code have drifted.
+- **`updated_at` belongs to persistence.** The domain's transaction has no such field, so the writer supplies it.
+- **A ledger entry loads without being re-validated,** so a corrupt stored row still loads and reports itself unbalanced for reconciliation (FR-70).
+- **The mapping cannot drift from the migrations unnoticed:** a test compares every column's data type and nullability with the declared runtime type, and the columns with the record's keys.
+- `createOrmConfig` takes the entities as a parameter, because `platform` may not import business code.
+
 **What no constraint covers:**
 
 - That a balance change has a ledger entry, or that an entry's amount equals its transaction's. Both hold because they happen in one use case, and reconciliation detects a breach of the first (FR-70).
@@ -305,7 +316,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | --- | --- | --- |
 | 0 | Base: tooling, CI, platform, runtime contracts, documents | Done |
 | 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, settlement policy, integration events, payload hash | Done |
-| 2 | Schema: migrations, constraints, triggers, persistence records and mappers | In progress: migrations, constraints and triggers done |
+| 2 | Schema: migrations, constraints, triggers, persistence records and mappers | Done |
 | 3 | Settlement use case and HTTP API | Not started |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Not started |
 | 5 | Outbox and publisher | Not started |

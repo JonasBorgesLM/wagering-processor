@@ -11,7 +11,7 @@ New records start from [`TEMPLATE.md`](TEMPLATE.md).
 | ADR | Title | Status | Amended by |
 | --- | --- | --- | --- |
 | [`0001`](0001-one-deployable-with-role-selected-processes.md) | One deployable, with processes selected by role | Accepted | — |
-| [`0002`](0002-persistence-records-are-separate-from-domain-classes.md) | MikroORM maps persistence records, and mappers build domain classes | Accepted | — |
+| [`0002`](0002-persistence-records-are-separate-from-domain-classes.md) | MikroORM maps persistence records, and mappers build domain classes | Accepted | Amended by its own note on issue #11 |
 | [`0003`](0003-wallet-row-lock-is-taken-before-any-insert.md) | Concurrency uses a wallet row lock, taken before any insert | Accepted | — |
 | [`0004`](0004-money-is-bigint-minor-units.md) | Money is held as bigint minor units in the domain | Accepted | — |
 | [`0005`](0005-idempotency-is-enforced-by-two-unique-keys.md) | Idempotency rests on two unique keys and a stored result | Accepted | — |
