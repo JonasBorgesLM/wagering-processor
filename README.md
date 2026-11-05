@@ -4,7 +4,7 @@ A distributed financial service that applies betting operations from game provid
 
 Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge).
 
-> **Status: early.** The runtime, tooling, CI, documents, `Money`, `Wallet`, the ledger entry, the transaction lifecycle, the settlement rules, the integration events, the payload hash, the database schema and the persistence mappers are in place. **There is no wallet, transaction or ledger code yet**, so this does not process a bet today. See the [roadmap](ARCHITECTURE.md#roadmap).
+> **Status: early.** The runtime, tooling, CI, documents, `Money`, `Wallet`, the ledger entry, the transaction lifecycle, the settlement rules, the integration events, the payload hash, the database schema, the persistence mappers and the settlement use case are in place. **There is no wallet, transaction or ledger code yet**, so this does not process a bet today. See the [roadmap](ARCHITECTURE.md#roadmap).
 
 ---
 
@@ -22,7 +22,8 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 - The database schema in a reversible migration, with uniqueness, non-negative balances, the single-reversal rule and the ledger's arithmetic enforced by constraints, each tested in raw SQL. Triggers make the ledger append-only and settled transactions final. Nothing writes to these tables yet.
 - Persistence records and mappers between the domain and the tables, tested through a real PostgreSQL round trip with amounts beyond what a double holds. Nothing uses them yet: the settlement use case that reads and writes through them is next.
 - The layer rules are tested by breaking each one on purpose, not only by running the checker on code that obeys them.
-- Designed but not implemented: idempotency, duplicate control, consistency and resilience, described in [Patterns](ARCHITECTURE.md#patterns).
+- Settlement: `SubmitWagerTransaction` takes the wallet lock, answers replays and conflicts, and commits the transaction, balance, ledger entry and events together, tested with real parallel connections on PostgreSQL. **It is not reachable yet:** there is no HTTP endpoint or queue consumer, and nothing publishes the stored events.
+- Designed but not implemented: the inbox, publishing, retries and full shutdown, described in [Patterns](ARCHITECTURE.md#patterns).
 - Contract tests on what the design relies on: row-lock serialization, the deadlock that fixes the lock order, exact `NUMERIC` strings, reversible migrations, FIFO group hold, deduplication, visibility and DLQ redrive.
 
 **Not verified yet:** draining with messages in flight, because the consumer does not exist.
@@ -66,6 +67,7 @@ curl localhost:3001/health/ready   # also 3002, 3003
 | `bun run lint` | Biome, layer boundaries, money guard |
 | `bun run test:unit` | Unit tests, no services needed |
 | `bun run test:integration` | Needs `docker compose up postgres sqs` |
+| `bun run test:concurrency` | Real parallel connections; needs the same services |
 | `bun run check:docs` | ADR index, cited ids, relative links |
 
 ## Documents

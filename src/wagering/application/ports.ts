@@ -1,0 +1,48 @@
+import type { IntegrationEvent } from "../domain/integration-event";
+import type { WagerTransaction } from "../domain/wager-transaction";
+import type { Wallet } from "../domain/wallet";
+import type { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
+
+/**
+ * One SQL transaction. Repositories exist only inside `run`, so a write outside
+ * the transaction cannot be written. It commits when `work` returns and rolls
+ * back when it throws.
+ */
+export interface UnitOfWork {
+  /** Throws `TransientFailureError` and `DuplicateOperationError` as described on each. */
+  run<T>(work: (tx: TransactionContext) => Promise<T>): Promise<T>;
+}
+
+export interface TransactionContext {
+  wallets: {
+    /** Takes the row lock, and waits for it within the lock timeout (ADR-0003). */
+    lockById(id: string): Promise<Wallet | undefined>;
+    insert(wallet: Wallet): Promise<void>;
+    save(wallet: Wallet): Promise<void>;
+  };
+  transactions: {
+    findByKey(idempotencyKey: string): Promise<WagerTransaction | undefined>;
+    findByExternalId(
+      providerId: string,
+      externalTransactionId: string,
+    ): Promise<WagerTransaction | undefined>;
+    /** Whether a `PROCESSED` reversal already points at this transaction (ADR-0006). */
+    isReversed(referenceTransactionId: string): Promise<boolean>;
+    insert(transaction: WagerTransaction): Promise<void>;
+  };
+  ledger: {
+    /** Append only: the port offers nothing else, and the database refuses anything else (SR-06). */
+    append(entry: WalletLedgerEntry): Promise<void>;
+  };
+  outbox: {
+    enqueue(events: ReadonlyArray<IntegrationEvent<object>>): Promise<void>;
+  };
+}
+
+export interface Clock {
+  now(): Date;
+}
+
+export interface IdGenerator {
+  next(): string;
+}

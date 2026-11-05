@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, the settlement policy, the integration events, the payload hash, the schema and the persistence mappers exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
+> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, the settlement policy, the integration events, the payload hash, the schema, the persistence mappers and the settlement use case exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
 
 ---
 
@@ -121,28 +121,27 @@ type SettlementDecision =
 ## Ports
 
 ```ts
-interface UnitOfWork {
-  /** Every repository is reachable only from inside, so a write outside the transaction cannot be written. */
+interface UnitOfWork {                          // implemented, in application/ports.ts
+  /** Repositories exist only inside, so a write outside the transaction cannot be written. */
   run<T>(work: (tx: TransactionContext) => Promise<T>): Promise<T>;
 }
 
 interface TransactionContext {
-  wallets: { lockById(id: string): Promise<Wallet | undefined>; save(wallet: Wallet): Promise<void>;
-             insert(wallet: Wallet): Promise<void> };
+  wallets: { lockById(id: string): Promise<Wallet | undefined>; insert(wallet: Wallet): Promise<void>;
+             save(wallet: Wallet): Promise<void> };
   transactions: { findByKey(key: string): Promise<WagerTransaction | undefined>;
                   findByExternalId(providerId: string, externalId: string): Promise<WagerTransaction | undefined>;
                   isReversed(referenceId: string): Promise<boolean>;
-                  insert(transaction: WagerTransaction): Promise<void>;
-                  update(transaction: WagerTransaction): Promise<void> };
+                  insert(transaction: WagerTransaction): Promise<void> };
   ledger: { append(entry: WalletLedgerEntry): Promise<void> };          // append only (FR-14)
-  inbox: { record(message: InboxMessage): Promise<"new" | "duplicate" | "payload-conflict"> };
-  outbox: { enqueue(events: IntegrationEvent<unknown>[]): Promise<void> };
+  outbox: { enqueue(events: ReadonlyArray<IntegrationEvent<object>>): Promise<void> };
 }
 
-interface EventPublisher { publish(message: OutboxMessage): Promise<void>; }
 interface Clock { now(): Date; }
 interface IdGenerator { next(): string; }       // UUIDv7, time-ordered for index locality
 ```
+
+Each method exists because something calls it. Still to come with their callers: the inbox (#15), updating a stored transaction (#19), and `EventPublisher` (#18).
 
 ## Flows
 
@@ -171,6 +170,15 @@ after commit: respond, or ack (NFR-04)
 ```
 
 A unique violation in step 6 means a race on the same key from another wallet path. The flow restarts once and finds the winner's row (ADR-0005).
+
+**Implemented** in `SubmitWagerTransaction`, without the inbox step, which comes with the consumer (#15). `outbox_messages` is written, and nothing publishes it until #18.
+
+### Lock limits
+
+- **`LOCK_TIMEOUT_MS`, default 2000.** Measured on a laptop with local Docker (median of 5 runs, a rough figure and not a benchmark): 40 parallel operations on one wallet finish in about 169 ms, so about 4 ms each, fast path included. Two seconds therefore means roughly 470 operations are already queued on one wallet. Waiting longer holds a pooled connection for an answer the provider may have stopped waiting for, so past that point the system answers "try again" and sheds the load. It is a judgement, not a measured optimum: the load test should revisit it (ADR-0003).
+- **`STATEMENT_TIMEOUT_MS`, default 5000.** The upper bound on any statement, lock wait included, so a hung query cannot hold a connection forever (NFR-11). It is longer than the lock limit so the lock limit answers first, with its own code.
+- Both are `SET LOCAL`: they end with the transaction and do not leak to the connection's next user, which a test checks.
+- **What is transient:** `55P03`, `40P01`, `40001`, `57014`, the shutdown and connection classes, and network errors. Nothing was committed, so trying again is safe. A constraint violation is not: retrying cannot change its answer, so it stays loud. Only a violation of the two operation keys restarts the flow.
 
 ### Publishing events
 
@@ -317,7 +325,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 0 | Base: tooling, CI, platform, runtime contracts, documents | Done |
 | 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, settlement policy, integration events, payload hash | Done |
 | 2 | Schema: migrations, constraints, triggers, persistence records and mappers | Done |
-| 3 | Settlement use case and HTTP API | Not started |
+| 3 | Settlement use case and HTTP API | In progress: settlement use case done, HTTP not started |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Not started |
 | 5 | Outbox and publisher | Not started |
 | 6 | Out-of-order references worker | Not started |
