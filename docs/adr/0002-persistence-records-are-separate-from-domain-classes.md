@@ -23,3 +23,14 @@ Trying it on this stack: TypeScript rejects a private constructor in `EntitySche
 
 ## Reopening criterion
 Mappers becoming a recurring source of bugs measured in practice.
+
+## Amendment (implementation of issue #11)
+
+Nothing above is superseded. What building it settled:
+
+- **The records are interfaces, not classes.** `EntitySchema` accepts a `name` with no class, so a record is a plain object and has no constructor to bypass or to loosen. A loaded record is an ORM entity and not a plain object, so the mappers read properties and always return domain classes.
+- **Amounts are exact because of the column type.** With `numeric(20,2)` the ORM maps the property to its decimal type and reads a string. Declaring the property as a number changes nothing, which was checked, so the declared type is documentation and a test pins the resolved one against the database.
+- **`updated_at` is supplied by whoever writes the row.** The domain's transaction has no such field (the README gives it none), so `transactionToRecord` takes it as an argument. That is where the time of a rejection is kept.
+- **The ORM's entities are passed in.** `createOrmConfig` takes them as a parameter, because `platform` may not import business code.
+- **A stored value the code does not recognise is an error.** Mappers throw `PersistenceMappingError` instead of carrying an unknown kind, status or code into the domain, which would mean the schema and the code have drifted.
+

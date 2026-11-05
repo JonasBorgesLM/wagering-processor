@@ -315,7 +315,7 @@ Every event is stored in the outbox and published as this envelope. `eventType` 
 - **NFR-06** Metrics: transactions by status, duplicates, retries, DLQ messages, lock conflicts, outbox lag, processing latency (§12).
 - **NFR-07** All required tests in §13 run against real PostgreSQL and real LocalStack or MiniStack, with real parallelism.
 - **NFR-08** All project text, code and commits are in English. Gitflow with Conventional Commits, checked on every commit and on the PR title.
-- **NFR-09** Dependencies point inward: `domain` imports only itself; `application` imports domain and its own ports, never an adapter or framework. Checked by `check-boundaries.sh`, which also fails if it analysed nothing.
+- **NFR-09** Dependencies point inward: `domain` imports only itself; `application` imports domain and its own ports, never an adapter or framework. Checked by `check-boundaries.sh`, which also fails if it analysed nothing, and by `test/unit/architecture.test.ts`, which breaks each rule once on a throwaway tree and expects exactly those violations.
 - **NFR-10** Every dependency and CI action is pinned exactly; the lockfile is frozen on install.
 - **NFR-11** Every call to PostgreSQL or SQS is bounded by a timeout. Transient failures retry with exponential backoff and jitter, up to a limit, and retrying is safe because every operation is idempotent.
 - **NFR-12** A change to behaviour updates its documents in the same pull request. A PR changing `src` or `migrations` without touching a document fails CI unless labelled `no-docs-needed`. This proves only that a document changed, not that it is right; that part stays a review question.
