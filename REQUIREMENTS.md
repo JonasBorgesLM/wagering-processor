@@ -1,0 +1,292 @@
+# wagering-processor — Requirements
+
+**Version:** 0.1 (draft for review)
+**Status:** baseline for implementation — no code written yet
+**Source:** [`junglegaming/backend-challenge`](https://github.com/junglegaming/backend-challenge) at `c7143e6`. `§n` cites a section of that README.
+
+A requirement without a test that fails when the protection is removed counts
+as unimplemented. Interpretations (`INT-nn`) are decisions the README leaves
+open; §7 of the README requires them to be documented.
+
+---
+
+## 1. Purpose
+
+A distributed financial service that applies wagering operations from multiple
+game providers to player wallets, and stays correct when messages are
+duplicated, delivered out of order, processed simultaneously, or interrupted by
+a crash.
+
+**Global invariants (§3):** no duplicate credit, no duplicate debit, no lost
+confirmed event, no negative balance. At the end of every test:
+`wallet.balance == balance rebuilt from the ledger` (§13).
+
+### 1.1 Non-goals
+
+- Rounds are not a state machine. The provider owns round lifecycle (`INT-07`).
+- Partial reversals (§7.5).
+- Authentication: documented extension point only, no scored value (§2, §14).
+- Correcting divergences automatically (§9).
+
+---
+
+## 2. Actors
+
+| Actor | Role | Assumed capability | Assumed *not* to have |
+| --- | --- | --- | --- |
+| Game provider | Submits operations over HTTP or SQS | Retries; sends duplicates and out-of-order operations | Ability to submit `OPENING`; a correct view of ordering |
+| Queue (SQS) | Trusted internal channel (§2) | At-least-once delivery | Authority over identity: domain validation still applies |
+| Event consumer | Reads integration events | Deduplicates by `eventId` | An exactly-once or strictly ordered feed |
+| Operator | Handles DLQ, reconciliation alerts | Reads logs and metrics | Permission to edit the ledger |
+
+---
+
+## 3. Functional requirements
+
+### 3.1 Money (§6.1)
+
+- **FR-01** Contract amounts match `^(0|[1-9][0-9]*)\.[0-9]{2}$`. `NaN`, `Infinity`, scientific notation, empty strings, negative values and any other scale are rejected. `"25"` and `"25.5"` are invalid (`INT-01`).
+- **FR-02** `Money` never rounds. Arithmetic is exact and immutable; no `number` holds a monetary value at any layer.
+- **FR-03** Operations across currencies raise a domain error. The model is multi-currency; only `BRL` needs to be exercised beyond conflict tests.
+- **FR-04** `Money` can be negative internally (`negate`, signed reconciliation `difference`). Only input contracts reject negatives (`INT-02`).
+- **FR-05** Contract amounts are capped so that no accepted value can overflow the database column (`INT-03`).
+
+### 3.2 Wallet (§6.2, §9)
+
+- **FR-10** At most one wallet per `playerId` + `currency`; a duplicate is a conflict.
+- **FR-11** A positive `initialBalance` creates an `OPENING` transaction and a `CREDIT` ledger entry in the same SQL transaction. The wallet starts at `version = 1`.
+- **FR-12** A zero `initialBalance` creates neither transaction nor ledger entry, and also starts at `version = 1`.
+- **FR-13** `version` increments only when the balance changes: never on `LOSS`, rejection, pending, or replay.
+- **FR-14** Every balance change has exactly one ledger entry, and every ledger entry corresponds to one balance change.
+
+### 3.3 Operations (§7)
+
+| Kind | Balance | Ledger | Reference | Amount |
+| --- | --- | --- | --- | --- |
+| `BET` | debit | 1 `DEBIT` | none | > 0 |
+| `WIN` | credit | 1 `CREDIT` | optional, must be a `BET` | > 0, any value |
+| `LOSS` | none | none | optional, must be a `BET` (`INT-04`) | >= 0 (`INT-05`) |
+| `REFUND` | credit | 1 `CREDIT` | required, must be a `BET` | equals reference |
+| `ROLLBACK` of `BET` | credit | 1 `CREDIT` | required | equals reference |
+| `ROLLBACK` of `WIN` or `REFUND` | debit | 1 `DEBIT` | required | equals reference |
+| `OPENING` | credit | 1 `CREDIT` | internal only, cannot be submitted or referenced | > 0 |
+
+- **FR-20** `ROLLBACK` cannot reference `LOSS`, `OPENING` or another `ROLLBACK` (§7.3).
+- **FR-21** A reference resolves by `(providerId, referenceExternalTransactionId)` and must share player, wallet, currency and round (§7.2).
+- **FR-22** A reference can be reversed once, by any reversal kind. Full definition in §3.3.1 (`INT-06`).
+- **FR-23** A round can hold several `BET` and `WIN` operations; only `externalTransactionId` is unique (`INT-08`).
+- **FR-24** A `WIN` referencing an already reversed `BET` is rejected (`INT-09`).
+- **FR-25** `REJECTED` never changes the balance and never creates a ledger entry (§7.6).
+
+### 3.3.1 REFUND and ROLLBACK
+
+| | `REFUND` | `ROLLBACK` |
+| --- | --- | --- |
+| Meaning in the README | Reverts a `PROCESSED` `BET`, once | Reverts a `PROCESSED` transaction, once, with the inverse effect |
+| Allowed reference | `BET` | `BET`, `WIN` or `REFUND` |
+| Effect | Always `CREDIT` | Inverse of the reference: `BET` gives `CREDIT`; `WIN` or `REFUND` gives `DEBIT` |
+| Can fail for lack of funds | No | Only when reversing `WIN` or `REFUND` |
+| Reference id | Required | Required |
+| Amount | Equal to the reference | Equal to the reference |
+
+The README does not explain the business difference beyond this table, so no
+further meaning is assumed.
+
+- **FR-26** A reference must have the same provider, player, wallet, currency and round. Lookup is scoped to the provider, so another provider's transaction is simply not found: it waits and expires as `REFERENCE_NOT_FOUND`.
+- **FR-27** Only a `PROCESSED` reversal uses up the reference. A `REJECTED` or `PENDING_REFERENCE` reversal does not, so a `ROLLBACK` refused for lack of funds can be sent again under a new `externalTransactionId`.
+- **FR-28** Reversals are not cascading: reversing a `BET` leaves its `WIN` in place, and rolling back a `REFUND` does not restore the `BET` as reversible.
+- **FR-29** Concurrent or duplicate-reference reversals settle under the wallet lock: the first applies, the others get `ALREADY_REVERSED`, and the database index is the final guard.
+
+Starting from a balance of `100.00`, each line continuing from the previous:
+
+| Operation | Result | Balance |
+| --- | --- | --- |
+| `BET` b1 `80.00` | `PROCESSED` | `20.00` |
+| `REFUND` r1 of b1, `50.00` | `REJECTED`, `REFERENCE_AMOUNT_MISMATCH` | `20.00` |
+| `REFUND` r2 of b1, `80.00` | `PROCESSED` | `100.00` |
+| `REFUND` r3 of b1, `80.00` | `REJECTED`, `ALREADY_REVERSED` | `100.00` |
+| `ROLLBACK` x1 of b1, `80.00` | `REJECTED`, `ALREADY_REVERSED` | `100.00` |
+| `REFUND` r2 again, same key | Replay of the original result | `100.00` |
+| `ROLLBACK` x2 of r2, `80.00` | `PROCESSED`, debit | `20.00` |
+| `ROLLBACK` x3 of x2 | `REJECTED`, `REFERENCE_KIND_NOT_ALLOWED` | `20.00` |
+| `WIN` w1 `500.00` of b1 | `REJECTED`, `ALREADY_REVERSED` (`INT-09`) | `20.00` |
+| `WIN` w2 `500.00`, no reference | `PROCESSED` | `520.00` |
+| Player spends: `BET` b2 `510.00` | `PROCESSED` | `10.00` |
+| `ROLLBACK` x4 of w2, `500.00` | `REJECTED`, `REVERSAL_INSUFFICIENT_FUNDS` | `10.00` |
+| `ROLLBACK` x5 of `LOSS` or `OPENING` | `REJECTED`, `REFERENCE_KIND_NOT_ALLOWED` | `10.00` |
+| `REFUND` r4 of w2 | `REJECTED`, `REFERENCE_KIND_NOT_ALLOWED` | `10.00` |
+| `ROLLBACK` x6 of a transaction not yet arrived | `PENDING_REFERENCE` | `10.00` |
+
+### 3.4 Status lifecycle (§6.3)
+
+```text
+PENDING ──▶ PROCESSED | REJECTED | PENDING_REFERENCE | FAILED
+PENDING_REFERENCE ──▶ PROCESSED | REJECTED | FAILED
+```
+
+- **FR-30** `PROCESSED`, `REJECTED` and `FAILED` are terminal. Transitioning out of them is a programming error, not a business path.
+- **FR-31** `PENDING` is the in-memory birth state; the first commit stores its outcome, because HTTP and SQS settle synchronously (`INT-10`).
+- **FR-32** `FAILED` is set only by the pending-reference worker, for a stored transaction that cannot be settled for non-business reasons after its attempts run out. Failures with no stored row go to retry or DLQ (`INT-11`).
+
+### 3.5 Settlement order
+
+Checks run under the wallet lock, in this order, so the same input always gets the same code:
+
+1. Wallet exists, otherwise `WALLET_NOT_FOUND` (nothing stored, `INT-12`).
+2. Idempotency: replay or conflict (§3.7).
+3. Player matches the wallet: `PLAYER_WALLET_MISMATCH`.
+4. Currency matches the wallet: `CURRENCY_MISMATCH`.
+5. No reference given: go to step 11.
+6. Reference not found: `PENDING_REFERENCE`.
+7. Player, wallet, currency or round differ: `REFERENCE_MISMATCH`.
+8. Reference kind not allowed: `REFERENCE_KIND_NOT_ALLOWED`.
+9. Reference `PENDING` or `PENDING_REFERENCE`: stay pending. Reference `REJECTED` or `FAILED`: `REFERENCE_NOT_PROCESSED`.
+10. Reversal amount differs: `REFERENCE_AMOUNT_MISMATCH`. Already reversed: `ALREADY_REVERSED`.
+11. Debit without funds: `INSUFFICIENT_FUNDS` for `BET`, `REVERSAL_INSUFFICIENT_FUNDS` for `ROLLBACK` (§7.9). Credit above the column limit: `BALANCE_LIMIT_EXCEEDED`.
+12. Apply: update wallet, append ledger, mark `PROCESSED`.
+
+### 3.6 Out-of-order references (§7.1)
+
+- **FR-40** A scheduled worker retries `PENDING_REFERENCE` with exponential backoff, re-running the §3.5 order under the wallet lock.
+- **FR-41** Default backoff starts at 5s, doubles, and caps at 5 min. TTL is 1 h and configurable. One hour outlasts ordinary provider and queue redelivery without leaving a reversal open for a whole gaming session (`INT-13`).
+- **FR-42** On expiry the transaction becomes `REJECTED` with `REFERENCE_NOT_FOUND`, and `WagerTransactionRejected` is published.
+- **FR-43** Balance is checked at settlement, not at arrival.
+
+**Known limitation:** a `BET` arriving after its `ROLLBACK` expired is applied normally. There is no tombstone, because the README specifies waiting and then rejecting. The provider must issue a new reversal under a new id.
+
+### 3.7 Idempotency (§9, §7.7)
+
+- **FR-50** `Idempotency-Key` is mandatory over HTTP; over SQS it is `data.idempotencyKey`. Both feed the same use case.
+- **FR-51** `payloadHash` = SHA-256 of canonical JSON with sorted keys over `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money.amount`, `money.currency`, and `referenceExternalTransactionId` when present. The key, `messageId`, `occurredAt` and transport metadata are excluded, so a replay matches across channels.
+- **FR-52** Same key and same hash returns the original result with `idempotentReplay: true`: status, `failureCode` and balance as observed then. It publishes no event and changes nothing.
+- **FR-53** Same key with a different hash is `IDEMPOTENCY_CONFLICT`, never a replay.
+- **FR-54** Same `(providerId, externalTransactionId)` with a different key is `EXTERNAL_ID_CONFLICT`, since references and lookups depend on that pair being unique (`INT-14`).
+- **FR-55** The balance observed at decision time is stored on the transaction, because `LOSS` and `REJECTED` have no ledger entry to read it from.
+- **FR-56** A replay of a pending transaction returns its current state, and after settlement its final one.
+- **FR-57** A `REJECTED` result is final for that key, even if the condition later clears. To try again, the provider sends a new `externalTransactionId`.
+- **FR-58** `PLAYER_WALLET_MISMATCH` responses never include a balance: it belongs to another player (`INT-15`).
+
+### 3.8 Failure codes (§7.2)
+
+| Code | Stored | Provider action |
+| --- | --- | --- |
+| `INSUFFICIENT_FUNDS` | yes | Give up, or new id after funding |
+| `REVERSAL_INSUFFICIENT_FUNDS` | yes | Escalate: operational case, not a player error |
+| `CURRENCY_MISMATCH` | yes | Fix payload, new id |
+| `PLAYER_WALLET_MISMATCH` | yes | Fix payload, new id |
+| `REFERENCE_NOT_FOUND` | yes | New id once the reference exists |
+| `REFERENCE_MISMATCH` | yes | Fix payload, new id |
+| `REFERENCE_KIND_NOT_ALLOWED` | yes | Fix payload, new id |
+| `REFERENCE_NOT_PROCESSED` | yes | Give up: the reference did not apply |
+| `REFERENCE_AMOUNT_MISMATCH` | yes | Fix payload, new id |
+| `ALREADY_REVERSED` | yes | Give up: already reversed |
+| `BALANCE_LIMIT_EXCEEDED` | yes | Escalate |
+| `WALLET_NOT_FOUND` | no | Fix payload; same key may be resent |
+| `IDEMPOTENCY_CONFLICT` | no | Fix the key or payload |
+| `EXTERNAL_ID_CONFLICT` | no | Fix the key or id |
+| `VALIDATION_ERROR` | no | Fix payload; same key may be resent |
+
+### 3.9 HTTP (§9)
+
+| Situation | Status |
+| --- | --- |
+| Applied, or replay of applied | `200` |
+| Wallet created | `201` |
+| Pending reference, or its replay | `202` |
+| Invalid payload, missing key, bad cursor, `OPENING`, reserved provider | `400` |
+| Wallet or transaction not found | `404` |
+| Idempotency, external id, or duplicate wallet conflict | `409` |
+| Business rejection, or its replay | `422` |
+| Transient infrastructure failure, with `Retry-After` | `503` |
+
+- **FR-60** The ledger uses an opaque, stable cursor; `limit` defaults to 50 with a maximum of 200.
+- **FR-61** Health endpoints are unauthenticated: `live` checks the process, `ready` checks PostgreSQL and SQS.
+- **FR-62** The provider id `internal` is reserved for `OPENING` and rejected on input (`INT-16`).
+
+### 3.10 Reconciliation (§9)
+
+- **FR-70** Compares the stored balance with the ledger sum, and checks the entry chain (each `balanceBefore` equals the previous `balanceAfter`).
+- **FR-71** Reads a consistent snapshot without taking the wallet lock, so it does not stall a hot wallet.
+- **FR-72** A divergence is logged, counted in a metric and flagged in the response. It is never corrected. `difference` is signed.
+
+### 3.11 SQS consumer (§10)
+
+| Outcome | Action |
+| --- | --- |
+| Processed, business rejection, pending, or replay | Commit, then ack |
+| New `messageId` with a known idempotency key and matching hash | Replay, count as duplicate, ack |
+| Known `(consumerName, messageId)` with matching hash | Ack |
+| Database or lock failure | No ack, backoff through visibility; DLQ when attempts run out |
+| Malformed JSON, unknown `type`, invalid payload, `OPENING` | DLQ |
+| Same `messageId` with a different hash | DLQ (`INT-17`) |
+| `IDEMPOTENCY_CONFLICT`, `EXTERNAL_ID_CONFLICT`, `WALLET_NOT_FOUND` | DLQ (`INT-17`) |
+
+- **FR-80** On `SIGTERM`: stop polling, finish in-flight work within a deadline, return the visibility of the rest, and fail readiness.
+
+### 3.12 Events (§11)
+
+| Outcome | Events |
+| --- | --- |
+| `PROCESSED` with balance change, including `OPENING` (`INT-18`) | `WagerTransactionProcessed`, `WalletBalanceChanged` |
+| `LOSS` processed | `WagerTransactionProcessed` |
+| `REJECTED`, including expiry | `WagerTransactionRejected` |
+| `PENDING_REFERENCE` (first time only) | `WagerTransactionPendingReference` |
+| Replay, or `FAILED` | None required by the minimum set; `FAILED` is logged and counted |
+
+- **FR-90** Events are written in the same SQL transaction as the state change and published only by the outbox worker, to a dedicated queue `wagering-events.fifo` (`INT-19`).
+- **FR-91** Publication is at-least-once, with no attempt limit. `eventId` is the consumer's dedup key. `walletVersion` lets consumers restore balance order, since retries can reorder events.
+
+---
+
+## 4. Security requirements
+
+- **SR-01** Logs carry correlation ids and no sensitive data or full financial payloads (§12).
+- **SR-02** Every provider field from the queue passes the same domain validation as HTTP (§2).
+- **SR-03** Without authentication, any caller can act as any provider. This is accepted by §2 and is **not** mitigated by anything else here; the extension point and intended design are documented in `ARCHITECTURE.md`.
+
+---
+
+## 5. Non-functional requirements
+
+- **NFR-01** Bun 1.x, strict TypeScript, NestJS, PostgreSQL, SQS via LocalStack or MiniStack, Docker Compose, MikroORM, reversible migrations (§4).
+- **NFR-02** Enforced by the schema, not only by code (§5.9): wallet uniqueness, non-negative balance, idempotency and external-id uniqueness, one ledger entry per transaction, single `PROCESSED` reversal per reference (partial unique index on `reference_transaction_id` for `REFUND` and `ROLLBACK`), ledger immutability including `TRUNCATE`.
+- **NFR-03** No global lock. The concurrency unit is `walletId` (§5.6, §8). Correct with three or more instances (§5.8).
+- **NFR-04** Inbox, financial change, ledger and outbox share one SQL transaction. Ack and publication happen only after commit (§5.4, §6.5, §10).
+- **NFR-05** The broker's ordering and dedup are optimizations, never the guarantee (§5.3, §8).
+- **NFR-06** Metrics: transactions by status, duplicates, retries, DLQ messages, lock conflicts, outbox lag, processing latency (§12).
+- **NFR-07** All required tests in §13 run against real PostgreSQL and real LocalStack or MiniStack, with real parallelism.
+- **NFR-08** All project text, code and commits are in English. Gitflow with Conventional Commits.
+
+---
+
+## 6. Interpretations
+
+| Id | Decision | README basis | Option not taken |
+| --- | --- | --- | --- |
+| `INT-01` | Exactly two decimals required | §6.1 "always fixed scale of 2" | Normalizing `"25.5"`: the hash would need to see through formats |
+| `INT-02` | `Money` signed internally | `negate` and `isNegative` exist in §6.1 | A separate signed type |
+| `INT-03` | Input capped to fit the column | Unstated | Letting the database raise an overflow as a 500 |
+| `INT-04` | `LOSS` may reference a `BET` | Table names only `WIN`, but §7.8 is generic | Rejecting: refuses a record that moves no money |
+| `INT-05` | Only `LOSS` accepts `0.00` | `LOSS` moves nothing; ledger amounts must be positive | Rejecting zero everywhere |
+| `INT-06` | One `PROCESSED` reversal per reference, of any kind. §7.4 forbids repeating a type but does not grant permission to mix types, so this breaks no written rule | §3 forbids duplicate credit: `BET` 80, `REFUND` +80, `ROLLBACK` of the `BET` +80 creates 80 from nothing. Also the §7 table's "once" | (a) `UNIQUE(reference, kind)` alone allows that double credit. (b) Allowing a second reversal only after the first was itself rolled back would be correct, but the cross-kind guard could no longer live in the schema (§5.9). Cost accepted: `REFUND`, `ROLLBACK` of it, then `ROLLBACK` of the `BET` is refused and needs an operator |
+| `INT-07` | No round state machine | §7 defines none | Modeling round open/closed |
+| `INT-08` | Multiple `BET`/`WIN` per round | §7 forbids nothing; multi-payout games exist | One `WIN` per `BET` |
+| `INT-09` | `WIN` on a reversed `BET` rejected | Unstated; protects against paying a voided bet | Allowing it. A `REFUND` after an existing `WIN` is still allowed, so this protection is one-directional |
+| `INT-10` | Synchronous settlement | §9 sample returns `PROCESSED` | Enqueuing all HTTP submissions |
+| `INT-11` | `FAILED` limited to stored rows | No row exists before the first commit | Writing a separate failure transaction |
+| `INT-12` | Unknown wallet stores nothing | The transaction requires a wallet reference | Dropping the foreign key to store the rejection |
+| `INT-13` | 1 h TTL | §7.1 asks for a justified limit | Attempt count: its real duration is harder to reason about |
+| `INT-14` | External id unique, separately from the key | §9 lookup and §7.2 resolution need one result | Allowing two keys to share an id |
+| `INT-15` | No balance on player mismatch | Data exposure | Uniform response shape |
+| `INT-16` | `internal` provider reserved | §6.3 `OPENING` is internal | Nullable provider columns on `OPENING` |
+| `INT-17` | Queue conflicts go to DLQ | §10 permanent errors; a queue has no caller to answer | Ack with a dedicated audit table |
+| `INT-18` | `OPENING` publishes events | §11 "any applied transaction" | Silent opening |
+| `INT-19` | Separate event queue | §10 defines only input and DLQ queues | Publishing into the input queue, which would feed consumers their own events |
+
+---
+
+## 7. Out of scope
+
+- Authentication implementation (§2): decision and design go in `ARCHITECTURE.md`.
+- Double-entry ledger, OpenTelemetry and dashboards (§6.4, §12): optional.
+- Load test (`bun run test:load`, §14): optional, done last if time allows.
