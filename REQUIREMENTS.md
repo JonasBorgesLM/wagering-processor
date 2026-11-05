@@ -357,6 +357,7 @@ Every event is stored in the outbox and published as this envelope. `eventType` 
 | `INT-21` | An `OPENING` derives its keys from the wallet id | One opening per wallet is then enforced by the unique idempotency key in the schema, not only by code | Random keys: a second opening would be a different row, and nothing would refuse it |
 | `INT-22` | `CURRENCY_MISMATCH` carries no balance | An observed balance is recorded in the transaction's own currency, and the wallet's is in another | Converting or storing the wallet's currency alongside: a second currency field on every row for one rejection |
 | `INT-23` | Every event's aggregate id is the wallet id, including the transaction events | The outbox uses it as the FIFO message group (ADR-0007), and a wallet is the unit of ordering and concurrency (§8) | The transaction id: events of one wallet would then spread over many groups and lose their order |
+| `INT-24` | Wallet, player and transaction ids are `uuid` columns; provider ids, external ids and keys are `varchar(255)` | The challenge's samples are UUIDs, and a bounded column backs SR-04 at the last line | `text` everywhere: nothing would bound an indexed value, and an over-long key would fail with an index-size error |
 
 ---
 
