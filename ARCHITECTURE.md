@@ -193,7 +193,7 @@ Outcomes are in REQUIREMENTS section 3.11. `SIGTERM` stops polling, finishes in-
 
 ## Schema
 
-The schema enforces what must hold even if the code is wrong (NFR-02). It is in `migrations/`, and every constraint below has a test in raw SQL that asserts which constraint refused the row. The triggers that make the ledger append-only come with issue #10.
+The schema enforces what must hold even if the code is wrong (NFR-02). It is in `migrations/`, and every constraint below has a test in raw SQL that asserts which constraint refused the row. Triggers add what a constraint cannot express: the ledger refuses `UPDATE`, `DELETE` and `TRUNCATE`, and a terminal transaction refuses `UPDATE` and `DELETE`.
 
 | Table | Guarantees in the database |
 | --- | --- |
@@ -208,6 +208,7 @@ The schema enforces what must hold even if the code is wrong (NFR-02). It is in 
 **What no constraint covers:**
 
 - That a balance change has a ledger entry, or that an entry's amount equals its transaction's. Both hold because they happen in one use case, and reconciliation detects a breach of the first (FR-70).
+- A role that owns the table, or a superuser, disabling a trigger (T-09). In Compose the application connects as a superuser, so the triggers stop mistakes, not a hostile operator; a deployment needs a separate role that does not own the tables.
 - A third decimal. `numeric(20,2)` **rounds** on input rather than refusing, and a test pins that. `Money` is what refuses it (FR-01), which is why nothing else may write amounts.
 - A new failure code needs a migration, because the known list is in a `CHECK`. That is deliberate: the taxonomy is a contract with providers.
 
@@ -304,7 +305,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | --- | --- | --- |
 | 0 | Base: tooling, CI, platform, runtime contracts, documents | Done |
 | 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, settlement policy, integration events, payload hash | Done |
-| 2 | Schema: migrations, constraints, triggers, persistence records and mappers | In progress: migrations and constraints done |
+| 2 | Schema: migrations, constraints, triggers, persistence records and mappers | In progress: migrations, constraints and triggers done |
 | 3 | Settlement use case and HTTP API | Not started |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Not started |
 | 5 | Outbox and publisher | Not started |

@@ -136,7 +136,7 @@ PENDING ──▶ PROCESSED | REJECTED | PENDING_REFERENCE | FAILED
 PENDING_REFERENCE ──▶ PROCESSED | REJECTED | FAILED
 ```
 
-- **FR-30** `PROCESSED`, `REJECTED` and `FAILED` are terminal. Transitioning out of them is a programming error, not a business path.
+- **FR-30** `PROCESSED`, `REJECTED` and `FAILED` are terminal. Transitioning out of them is a programming error, not a business path. A trigger also refuses updating or deleting such a row, so the rule and the audit trail hold if the code is wrong.
 - **FR-31** `PENDING` is the in-memory birth state; the first commit stores its outcome, because HTTP and SQS settle synchronously (`INT-10`).
 - **FR-32** `FAILED` is set only by the pending-reference worker, for a stored transaction that cannot be settled for non-business reasons after its attempts run out. Failures with no stored row go to retry or DLQ (`INT-11`). It carries `SETTLEMENT_FAILED`, never a business code, because a rejection blames the payload and an infrastructure fault must not (`INT-20`).
 
@@ -301,14 +301,14 @@ Every event is stored in the outbox and published as this envelope. `eventType` 
 - **SR-03** Without authentication, any caller can act as any provider. This is accepted by §2 and is **not** mitigated by anything else here; the extension point and intended design are in [ADR-0009](docs/adr/0009-authentication-is-a-documented-extension-point.md).
 - **SR-04** Input is bounded: request body size, `Idempotency-Key` and identifier lengths, ledger page size. No unbounded value reaches a query, an index or a log.
 - **SR-05** Domain rules apply to whoever submits: a provider cannot move another player's money by naming their wallet (`PLAYER_WALLET_MISMATCH`). This is a consistency check on the payload and **not** authorization: a caller who knows both ids passes it.
-- **SR-06** The ledger is append-only for the application role, enforced by trigger. A database superuser can disable the trigger; reconciliation can detect some such changes, not prevent them.
+- **SR-06** The ledger is append-only, enforced by trigger. The table's owner or a superuser can disable the trigger, and in Compose the application connects as one; reconciliation can detect some such changes, not prevent them.
 
 ---
 
 ## 5. Non-functional requirements
 
 - **NFR-01** Bun 1.x, strict TypeScript, NestJS, PostgreSQL, SQS via MiniStack ([ADR-0008](docs/adr/0008-ministack-is-the-local-sqs.md)), Docker Compose, MikroORM, reversible migrations (§4).
-- **NFR-02** Enforced by the schema, not only by code (§5.9): wallet uniqueness, non-negative balance, idempotency and external-id uniqueness, one ledger entry per transaction, single `PROCESSED` reversal per reference (partial unique index on `reference_transaction_id` for `REFUND` and `ROLLBACK`), ledger immutability including `TRUNCATE`.
+- **NFR-02** Enforced by the schema, not only by code (§5.9): wallet uniqueness, non-negative balance, idempotency and external-id uniqueness, one ledger entry per transaction, single `PROCESSED` reversal per reference (partial unique index on `reference_transaction_id` for `REFUND` and `ROLLBACK`), ledger immutability including `TRUNCATE`, and final terminal transactions.
 - **NFR-03** No global lock. The concurrency unit is `walletId` (§5.6, §8). Correct with three or more instances (§5.8).
 - **NFR-04** Inbox, financial change, ledger and outbox share one SQL transaction. Ack and publication happen only after commit (§5.4, §6.5, §10).
 - **NFR-05** The broker's ordering and dedup are optimizations, never the guarantee (§5.3, §8).

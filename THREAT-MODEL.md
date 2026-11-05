@@ -89,7 +89,7 @@ queue ───SQS────▶ [ consumer ]┘                          │
 ### T-09 — Ledger tampering
 **Actor:** database administrator, application bug. **Impact:** a false audit trail.
 **Mitigation:** SR-06, NFR-02, FR-70.
-**Residual:** a superuser can disable the trigger and alter both balance and ledger consistently. That is undetectable here; a hash chain would be needed.
+**Residual:** a superuser can disable the trigger and alter both balance and ledger consistently. That is undetectable here; a hash chain would be needed. In Compose the application itself connects as a superuser, so the triggers stop application bugs there, not a hostile operator. A deployment needs an application role that does not own the tables, which this project does not provide.
 
 ### T-10 — Poison message blocks a wallet
 **Actor:** queue producer. **Impact:** a FIFO group stalls, delaying that wallet.
