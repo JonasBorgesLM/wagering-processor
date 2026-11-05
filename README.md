@@ -4,7 +4,7 @@ A distributed financial service that applies betting operations from game provid
 
 Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge).
 
-> **Status: early.** The runtime, tooling, CI, documents, `Money`, `Wallet`, the ledger entry, the transaction lifecycle, the settlement rules, the integration events, the payload hash, the database schema, the persistence mappers, the settlement use case and the wallet API are in place. **There is no wallet, transaction or ledger code yet**, so this does not process a bet today. See the [roadmap](ARCHITECTURE.md#roadmap).
+> **Status: early.** The runtime, tooling, CI, documents, `Money`, `Wallet`, the ledger entry, the transaction lifecycle, the settlement rules, the integration events, the payload hash, the database schema, the persistence mappers, the settlement use case and the HTTP API are in place. **There is no wallet, transaction or ledger code yet**, so this does not process a bet today. See the [roadmap](ARCHITECTURE.md#roadmap).
 
 ---
 
@@ -22,8 +22,8 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 - The database schema in a reversible migration, with uniqueness, non-negative balances, the single-reversal rule and the ledger's arithmetic enforced by constraints, each tested in raw SQL. Triggers make the ledger append-only and settled transactions final. Nothing writes to these tables yet.
 - Persistence records and mappers between the domain and the tables, tested through a real PostgreSQL round trip with amounts beyond what a double holds. Nothing uses them yet: the settlement use case that reads and writes through them is next.
 - The layer rules are tested by breaking each one on purpose, not only by running the checker on code that obeys them.
-- Wallets over HTTP: create, read and page the ledger, with one error envelope, a body limit and correlation ids, tested end to end against a real database. See the API section below.
-- Settlement: `SubmitWagerTransaction` takes the wallet lock, answers replays and conflicts, and commits the transaction, balance, ledger entry and events together, tested with real parallel connections on PostgreSQL. **It is not reachable yet:** there is no endpoint that submits a bet or queue consumer, and nothing publishes the stored events.
+- The HTTP API: wallets, bets and reads of a transaction, with the idempotency header, one error envelope, a body limit and correlation ids, tested end to end against a real database with real parallelism, and checked across three processes. See the API section below.
+- Settlement: `SubmitWagerTransaction` takes the wallet lock, answers replays and conflicts, and commits the transaction, balance, ledger entry and events together, tested with real parallel connections on PostgreSQL. **Reachable over HTTP only:** there is no queue consumer yet, and nothing publishes the stored events.
 - Designed but not implemented: the inbox, publishing, retries and full shutdown, described in [Patterns](ARCHITECTURE.md#patterns).
 - Contract tests on what the design relies on: row-lock serialization, the deadlock that fixes the lock order, exact `NUMERIC` strings, reversible migrations, FIFO group hold, deduplication, visibility and DLQ redrive.
 
@@ -74,13 +74,16 @@ curl localhost:3001/health/ready   # also 3002, 3003
 
 ## API
 
-Wallets are the only part reachable over HTTP so far. **There is no endpoint that submits a bet yet** (issue #14).
+Wallets and transactions are reachable over HTTP. **Nothing authenticates a caller yet** (ADR-0009), so do not expose it.
 
 | Request | Answer |
 | --- | --- |
 | `POST /wallets` | `201` and the wallet; `409` if the player already has one in that currency |
 | `GET /wallets/:walletId` | `200`; `404` if there is none |
 | `GET /wallets/:walletId/ledger?limit=50&cursor=…` | `200` with `items` and `nextCursor` (`null` on the last page) |
+| `POST /wagering/transactions` | `200` applied, `202` waiting for its reference, `422` refused by a rule (with `failureCode`); `Idempotency-Key` header required |
+| `GET /wagering/transactions/:transactionId` | `200`, or `404` |
+| `GET /providers/:providerId/wagering/transactions/:externalTransactionId` | `200`, or `404` |
 | `GET /health/live`, `GET /health/ready`, `GET /metrics` | liveness, readiness (`503` if PostgreSQL or SQS is down), Prometheus |
 
 ```bash
@@ -95,6 +98,18 @@ curl -s -X POST localhost:3000/wallets -H 'content-type: application/json' \
 - **Bodies are limited to 16 KB and refuse unknown fields.** Ids are UUIDs, in any case.
 - **Every response has `X-Correlation-Id`**: yours if it is plain, otherwise a generated one.
 
+```bash
+curl -s -X POST localhost:3000/wagering/transactions -H 'content-type: application/json' \
+  -H 'idempotency-key: provider-a:transaction-123' \
+  -d '{"providerId":"provider-a","externalTransactionId":"transaction-123","playerId":"…","walletId":"…",
+       "roundId":"round-987","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}'
+# {"transactionId":"…","status":"PROCESSED","balance":{"amount":"975.00","currency":"BRL"},"idempotentReplay":false}
+```
+
+- **Sending it again with the same key returns the same answer** with `"idempotentReplay": true` and changes nothing. The same key with a different payload is a `409`.
+- **The operations** are `BET`, `WIN`, `LOSS`, `REFUND` and `ROLLBACK`. A `REFUND` or `ROLLBACK` names what it reverses in `referenceExternalTransactionId`; if that has not arrived yet the answer is `202` and it is applied when it does.
+- **A `422` is final for that key.** To try again after the cause is gone, send a new `externalTransactionId`.
+
 Every error looks the same, and the status tells a provider what to do:
 
 ```json
@@ -105,11 +120,13 @@ Every error looks the same, and the status tells a provider what to do:
 | Status | Meaning | Resend the same request? |
 | --- | --- | --- |
 | `400` | The request is wrong (`details` says which fields) | No: fix it |
-| `404` | No such wallet or route | No |
+| `404` | No such wallet, transaction or route | No |
 | `409` | Conflicts with something that exists | No |
+| `422` | A business rule refused it (`failureCode` says which) | No: a new id after the cause is gone |
+| `202` | Accepted, waiting for the transaction it points at | No: it is applied when that arrives |
 | `413` | Body over the limit | No |
 | `503` | Nothing was changed; try again (`Retry-After: 1`) | **Yes** |
-| `500` | A bug; the cause is logged, never sent | Report it |
+| `500` | A bug, or a transaction that ended in a failure; the cause is logged, never sent | Report it |
 
 ## Documents
 

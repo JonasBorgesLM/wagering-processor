@@ -187,7 +187,7 @@ Checks run under the wallet lock, in this order, so the same input always gets t
   ```
 - **FR-52** Same key and same hash returns the original result with `idempotentReplay: true`: status, `failureCode` and balance as observed then. It publishes no event and changes nothing.
 - **FR-53** Same key with a different hash is `IDEMPOTENCY_CONFLICT`, never a replay.
-- **FR-54** Same `(providerId, externalTransactionId)` with a different key is `EXTERNAL_ID_CONFLICT`, since references and lookups depend on that pair being unique (`INT-14`).
+- **FR-54** Same `(providerId, externalTransactionId)` with a different key is `EXTERNAL_ID_CONFLICT`, since references and lookups depend on that pair being unique (`INT-14`). A row found under the request's own key is never this conflict, however it was found: it is a replay, or a key conflict if the payload differs.
 - **FR-55** The balance observed at decision time is stored on the transaction, because `LOSS` and `REJECTED` have no ledger entry to read it from.
 - **FR-56** A replay of a pending transaction returns its current state, and after settlement its final one.
 - **FR-57** A `REJECTED` result is final for that key, even if the condition later clears. To try again, the provider sends a new `externalTransactionId`.
@@ -223,10 +223,12 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 | Pending reference, or its replay | `202` |
 | Invalid payload, missing key, bad cursor, `OPENING`, reserved provider | `400` |
 | Body over the size limit | `413` |
-| Wallet or transaction not found | `404` |
+| Wallet or transaction not found, or an unknown route | `404` |
+| Not authenticated, or not allowed (when a guard exists, ADR-0009) | `401`, `403` |
 | Idempotency, external id, or duplicate wallet conflict | `409` |
 | Business rejection, or its replay | `422` |
 | Transient infrastructure failure, with `Retry-After` | `503` |
+| A stored transaction that ended in an infrastructure failure | `500` (terminal: a new id is needed) |
 
 - **FR-60** The ledger uses an opaque, stable cursor; `limit` defaults to 50 with a maximum of 200, and a `limit` outside 1 to 200 is a `400`, not clamped, so a provider hears that it asked for more than it gets. The cursor means "after this wallet version", so entries added while paging are neither skipped nor repeated.
 - **FR-61** Health endpoints are unauthenticated: `live` checks the process, `ready` checks PostgreSQL and SQS.
@@ -236,6 +238,11 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 - **FR-65** Every response carries `X-Correlation-Id`: the caller's when it is plain (`[A-Za-z0-9._:-]`, at most 128 characters), otherwise a generated one, so a header value is never reflected. The id reaches the events.
 - **FR-66** A process serves the wallet routes only when it has the `api` role; without it the routes do not exist and health and metrics still answer (ADR-0001).
 - **FR-67** Reads take no lock and see committed state, so a wallet under heavy settlement can still be read. They run under the same statement timeout as writes (NFR-11).
+- **FR-68** `POST /wagering/transactions` answers `200` for an applied transaction, `202` for one waiting for its reference, and `422` with a `failureCode` for a business rejection. A replay answers like the original and sets `idempotentReplay: true`. Applied, waiting, rejected, invalid, conflicting, missing and transient are seven different statuses.
+- **FR-69** `GET /wagering/transactions/:transactionId` and `GET /providers/:providerId/wagering/transactions/:externalTransactionId` return the stored transaction, with the balance observed then. A balance the submission withheld (FR-58) is withheld here too.
+- **FR-73** Every business controller carries the authentication guard, and a test fails if one does not (`ADR-0009`).
+- **FR-74** A request waits for a database connection for at most `DATABASE_ACQUIRE_TIMEOUT_MS`, and an exhausted pool is a transient failure like a lock timeout (NFR-11).
+- **FR-75** Provider ids and keys are 1 to 255 characters with no control characters; a violation is a `400` that names the field.
 
 ### 3.10 Reconciliation (§9)
 
