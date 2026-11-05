@@ -34,6 +34,11 @@ async function start(databaseUrl: string, roles = "api") {
 }
 
 beforeAll(async () => {
+  // The application's SQS client uses the standard AWS credential chain, as it must in production. Built in this
+  // process it finds them only if the environment has them: on a developer machine Bun loads them from .env, and
+  // in CI nothing does, so readiness waited on credentials until its own 2 s timeout and answered 503.
+  process.env.AWS_ACCESS_KEY_ID ??= TEST_ENV.AWS_ACCESS_KEY_ID;
+  process.env.AWS_SECRET_ACCESS_KEY ??= TEST_ENV.AWS_SECRET_ACCESS_KEY;
   // Readiness probes the queue, so it has to exist whatever ran before this file.
   await provisionQueues();
   world = await SettlementWorld.create();
