@@ -16,6 +16,7 @@ import {
 import {
   classifyPersistenceError,
   MikroOrmUnitOfWork,
+  POOL_TIMEOUT_MESSAGE,
 } from "../../src/wagering/infrastructure/persistence/mikro-orm-unit-of-work";
 import { brl, command, deferred, instrumented, SettlementWorld } from "../support/settlement";
 
@@ -301,6 +302,61 @@ describe("idempotency", () => {
   });
 });
 
+describe("a duplicate that wins between our two reads (found across three processes)", () => {
+  // The lock-free check reads by key and then by the provider's id. Those are two reads, not one snapshot, so a
+  // twin can commit in between: the first misses, the second finds the twin's row. That row has OUR key, so it is
+  // a replay. It was reported as EXTERNAL_ID_CONFLICT, which says "another key": 13 of 600 identical requests, in 8
+  // of 12 rounds of fifty spread over three processes. Here the twin is made to commit in exactly that gap.
+  async function raceInTheGap(submitFirst: boolean) {
+    const wallet = await world.openWallet("100.00");
+    const request = command(wallet, { money: brl("10.00") });
+    let twin: Promise<unknown> | undefined;
+    const spied = instrumented(world.unitOfWork, async (call, phase) => {
+      if (call === "transactions.findByKey" && phase === "after" && twin === undefined) {
+        twin = world.useCase.execute(request);
+        await twin;
+      }
+    });
+    const result = await world.useCaseWith(spied).execute(request);
+    return { wallet, result, twinRan: twin !== undefined, submitFirst };
+  }
+
+  test("it is a replay of the twin, not a conflict", async () => {
+    const { wallet, result, twinRan } = await raceInTheGap(true);
+    expect(twinRan).toBe(true);
+    expect(result).toMatchObject({ status: Status.Processed, idempotentReplay: true });
+    expect(result.balance?.toString()).toBe("90.00 BRL");
+    expect(await world.counts(wallet.walletId)).toEqual({ transactions: 1, entries: 1, events: 2 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
+  });
+
+  test("a twin with another payload but the same key is still a conflict on the key", async () => {
+    const wallet = await world.openWallet("100.00");
+    const original = command(wallet, { money: brl("10.00") });
+    let twin: Promise<unknown> | undefined;
+    const spied = instrumented(world.unitOfWork, async (call, phase) => {
+      if (call === "transactions.findByKey" && phase === "after" && twin === undefined) {
+        twin = world.useCase.execute({ ...original, money: brl("20.00") });
+        await twin;
+      }
+    });
+    await expect(world.useCaseWith(spied).execute(original)).rejects.toThrow(IdempotencyConflictError);
+  });
+
+  test("the same operation under another key is still a conflict on the id, in the same gap", async () => {
+    const wallet = await world.openWallet("100.00");
+    const original = command(wallet, { money: brl("10.00") });
+    let twin: Promise<unknown> | undefined;
+    const spied = instrumented(world.unitOfWork, async (call, phase) => {
+      if (call === "transactions.findByKey" && phase === "after" && twin === undefined) {
+        twin = world.useCase.execute({ ...original, idempotencyKey: "the-twins-own-key" });
+        await twin;
+      }
+    });
+    await expect(world.useCaseWith(spied).execute(original)).rejects.toThrow(ExternalIdConflictError);
+  });
+});
+
 describe("atomicity: a failure after any write commits nothing (NFR-04)", () => {
   class Crash extends Error {}
   const scenarios: Array<
@@ -469,6 +525,53 @@ describe("locks are transient failures, and commit nothing", () => {
       .catch((error: unknown) => classifyPersistenceError(error));
     expect(failure).not.toBeInstanceOf(TransientFailureError);
     expect(String(failure)).toContain("ck_wallets_balance_non_negative");
+  });
+});
+
+describe("a full connection pool is transient too (NFR-11)", () => {
+  // pg-pool reports it as a bare Error with no code, so the classifier goes by its message. This provokes the real
+  // error, so an upgrade that rewords it fails here and not silently in production.
+  test("the real error is recognised, and a request ends instead of waiting", async () => {
+    const small = await SettlementWorld.create(
+      { lockTimeoutMs: 2_000, statementTimeoutMs: 5_000 },
+      { max: 2, acquireTimeoutMs: 150 },
+    );
+    const release = deferred();
+    try {
+      const wallet = await small.openWallet("100.00");
+      const held = [deferred(), deferred()];
+      const holders = held.map((signal) =>
+        small.unitOfWork.run(async (tx) => {
+          await tx.transactions.findByKey("nothing");
+          signal.resolve();
+          await release.promise;
+        }),
+      );
+      await Promise.all(held.map((signal) => signal.promise));
+
+      const raw = await small.orm.em
+        .fork()
+        .transactional(async () => undefined)
+        .catch((error: unknown) => error);
+      expect(String((raw as Error).message)).toContain(POOL_TIMEOUT_MESSAGE);
+
+      const started = performance.now();
+      const bet = command(wallet);
+      const failure = await small.useCase.execute(bet).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(TransientFailureError);
+      expect(String((failure as Error).message)).toContain("no database connection");
+      expect(performance.now() - started).toBeLessThan(1_000);
+
+      // Nothing was committed, and once connections are free the same request goes through.
+      release.resolve();
+      await Promise.all(holders);
+      expect(await small.counts(wallet.walletId)).toEqual({ transactions: 0, entries: 0, events: 0 });
+      expect((await small.useCase.execute(bet)).status).toBe(Status.Processed);
+      await small.expectLedgerExplainsBalance(wallet.walletId);
+    } finally {
+      release.resolve();
+      await small.destroy();
+    }
   });
 });
 

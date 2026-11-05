@@ -107,29 +107,33 @@ export class SubmitWagerTransaction {
     });
   }
 
+  /**
+   * Two reads are not one snapshot: a twin can commit between them. So this asks what the row it found IS, not
+   * which of the two lookups found it. A row under our own key is a replay (or a conflict, if the payload
+   * differs) however it was reached; only a row under another key is the same operation sent twice.
+   * Reporting it by the lookup that found it called a replay a conflict: 13 of 600 identical requests, in 8 of 12
+   * rounds of fifty spread over three processes.
+   */
   private async answerIfKnown(
     tx: TransactionContext,
     transaction: WagerTransaction,
   ): Promise<SubmissionResult | undefined> {
-    const sameKey = await tx.transactions.findByKey(transaction.idempotencyKey);
-    if (sameKey) {
-      if (!sameKey.matchesPayload(transaction.payloadHash)) {
-        throw new IdempotencyConflictError(
-          `key ${transaction.idempotencyKey} was used with a different payload`,
-        );
-      }
-      return resultOf(sameKey, true);
-    }
-    const sameOperation = await tx.transactions.findByExternalId(
-      transaction.providerId,
-      transaction.externalTransactionId,
-    );
-    if (sameOperation) {
+    const existing =
+      (await tx.transactions.findByKey(transaction.idempotencyKey)) ??
+      (await tx.transactions.findByExternalId(transaction.providerId, transaction.externalTransactionId));
+    if (!existing) return undefined;
+
+    if (existing.idempotencyKey !== transaction.idempotencyKey) {
       throw new ExternalIdConflictError(
         `${transaction.providerId}:${transaction.externalTransactionId} already exists under another key`,
       );
     }
-    return undefined;
+    if (!existing.matchesPayload(transaction.payloadHash)) {
+      throw new IdempotencyConflictError(
+        `key ${transaction.idempotencyKey} was used with a different payload`,
+      );
+    }
+    return resultOf(existing, true);
   }
 
   private async settle(
