@@ -14,6 +14,7 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 - `GET /health/live` and `GET /health/ready`, with real PostgreSQL and SQS checks, and `GET /metrics`.
 - `SIGTERM` drains through the shutdown hooks.
 - Structured JSON logs with an allowlist of fields.
+- Designed but not implemented: idempotency, duplicate control, consistency and resilience, described in [Patterns](ARCHITECTURE.md#patterns).
 - Contract tests on what the design relies on: row-lock serialization, the deadlock that fixes the lock order, exact `NUMERIC` strings, reversible migrations, FIFO group hold, deduplication, visibility and DLQ redrive.
 
 **Not verified yet:** draining with messages in flight, because the consumer does not exist.
@@ -64,3 +65,4 @@ curl localhost:3001/health/ready   # also 3002, 3003
 | [`THREAT-MODEL.md`](THREAT-MODEL.md) | What can go wrong, including what is not covered |
 | [`docs/adr/`](docs/adr/README.md) | Contested decisions and the options rejected |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Gitflow, commits, checks |
+| [Project board](https://github.com/users/JonasBorgesLM/projects/10) | Development steps and live status (private until delivery) |

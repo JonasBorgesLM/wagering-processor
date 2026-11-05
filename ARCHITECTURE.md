@@ -188,6 +188,60 @@ The schema enforces what must hold even if the code is wrong (NFR-02). Designed,
 
 **What no constraint covers:** that a balance change has a ledger entry. That holds because both happen in one use case, and reconciliation detects a breach (FR-70).
 
+## Patterns
+
+Each pattern is here because a stated failure needs it. Where one does not fit, the reason is recorded.
+
+### Idempotency and duplicate control
+
+A duplicate is stopped at several independent layers, so no single one has to be perfect. Only the database layers are guarantees (NFR-05).
+
+| Layer | Stops | Kind |
+| --- | --- | --- |
+| SQS `MessageDeduplicationId` | Same message within the broker's window | Optimization |
+| Inbox `(consumer_name, message_id)` | Redelivery of one message | Guarantee |
+| `UNIQUE (idempotency_key)` with payload hash | Same operation by any channel; a changed payload is a conflict | Guarantee |
+| `UNIQUE (provider_id, external_transaction_id)` | Same provider operation under another key | Guarantee |
+| `UNIQUE (transaction_id)` on the ledger | A second entry for one transaction | Guarantee |
+| Partial unique index on reversals | A second reversal of one reference | Guarantee |
+| `eventId` | Duplicate publication | Consumer's duty (IR-03) |
+
+### Consistency
+
+- **Strong inside a wallet:** one SQL transaction holds the inbox, the transaction, the balance, the ledger and the outbox (NFR-04).
+- **Eventual outside it:** events arrive after commit, at least once, and may reorder, so they carry `walletVersion`.
+- **Detected, not assumed:** reconciliation compares the balance with the ledger and never corrects it (FR-72).
+
+### Resilience
+
+| Failure | Response | Reference |
+| --- | --- | --- |
+| Transient database or lock failure on HTTP | `503` with `Retry-After`, nothing committed | NFR-11 |
+| Transient failure on the queue | No ack, backoff through visibility, bounded by attempts | NFR-11 |
+| Permanent failure on the queue | DLQ, kept for an operator | §10 |
+| Broker down while publishing | Rows wait in the outbox and retry, with no attempt limit | FR-91 |
+| Process death at any point | Unacked messages return, and leases expire | ADR-0007 |
+| Hanging dependency | Every call has a timeout, and readiness reports it | NFR-11 |
+| One role overloaded | Roles run as separate processes when needed | ADR-0001 |
+
+**Retry and circuit breaker, deliberately different.** Retrying is safe only because of idempotency. A **circuit breaker does not fit** today: with PostgreSQL down no request can succeed anyway, it fails fast through `lock_timeout` and connection errors, and readiness already removes the instance from routing. Failing work on the queue already waits through visibility. A breaker would add state per instance to protect a dependency that has no fallback. Reopen if the load test shows requests piling up during an outage.
+
+### Graceful shutdown
+
+The order matters:
+
+```text
+SIGTERM
+  1. readiness fails, so routing stops            (done, tested)
+  2. stop polling and stop claiming               (FR-80, FR-81, not implemented)
+  3. finish in-flight work, up to the deadline    (FR-80, not implemented)
+  4. return the visibility of the rest            (FR-80, not implemented)
+  5. close database and SQS clients               (done)
+  deadline exceeded: exit; unacked work returns by itself
+```
+
+Shutdown is an optimization of recovery, not the guarantee. `kill -9` must also be safe, and the failure suite proves that.
+
 ## Decisions the challenge asks to justify
 
 | Topic | Choice | Record |
@@ -209,6 +263,8 @@ The schema enforces what must hold even if the code is wrong (NFR-02). Designed,
 - **Emulator, not AWS:** contract tests cover the SQS behaviour relied on, and do not prove parity with AWS (ADR-0008).
 
 ## Roadmap
+
+Live status is on the [project board](https://github.com/users/JonasBorgesLM/projects/10) (private until delivery). Each issue states its done criterion, its known failure mode, and the documents it must update.
 
 | Phase | Scope | Status |
 | --- | --- | --- |

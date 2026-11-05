@@ -222,6 +222,7 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 | `IDEMPOTENCY_CONFLICT`, `EXTERNAL_ID_CONFLICT`, `WALLET_NOT_FOUND` | DLQ (`INT-17`) |
 
 - **FR-80** On `SIGTERM`: stop polling, finish in-flight work within a deadline, return the visibility of the rest, and fail readiness.
+- **FR-81** On `SIGTERM`, the publisher and the reference worker stop claiming and finish what they hold. Anything unfinished is safe, because its lease expires and another instance takes it.
 
 ### 3.12 Events (§11)
 
@@ -261,6 +262,8 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 - **NFR-08** All project text, code and commits are in English. Gitflow with Conventional Commits, checked on every commit and on the PR title.
 - **NFR-09** Dependencies point inward: `domain` imports only itself; `application` imports domain and its own ports, never an adapter or framework. Checked by `check-boundaries.sh`, which also fails if it analysed nothing.
 - **NFR-10** Every dependency and CI action is pinned exactly; the lockfile is frozen on install.
+- **NFR-11** Every call to PostgreSQL or SQS is bounded by a timeout. Transient failures retry with exponential backoff and jitter, up to a limit, and retrying is safe because every operation is idempotent.
+- **NFR-12** A change to behaviour updates its documents in the same pull request. A PR changing `src` or `migrations` without touching a document fails CI unless labelled `no-docs-needed`. This proves only that a document changed, not that it is right; that part stays a review question.
 
 ---
 
