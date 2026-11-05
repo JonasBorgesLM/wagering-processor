@@ -5,6 +5,7 @@ import { BODY_LIMIT, createApp } from "../../src/app";
 import { loadConfig } from "../../src/platform/config/config";
 import { JsonLogger } from "../../src/platform/logging/json-logger";
 import { TEST_ENV } from "../support/env";
+import { provisionQueues } from "../support/queues";
 import { brl, command, SettlementWorld } from "../support/settlement";
 
 // The whole application as main builds it, on a real database, called over HTTP.
@@ -33,6 +34,8 @@ async function start(databaseUrl: string, roles = "api") {
 }
 
 beforeAll(async () => {
+  // Readiness probes the queue, so it has to exist whatever ran before this file.
+  await provisionQueues();
   world = await SettlementWorld.create();
   const started = await start(world.databaseUrl());
   app = started.instance;
