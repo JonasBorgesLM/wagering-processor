@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: types, lint, boundaries, unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run test:unit
+      - run: bun audit
+
+  integration:
+    name: integration (real PostgreSQL and SQS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - run: docker compose up -d --wait postgres sqs
+      - run: bun run test:integration
+      # Absent until phase 3. Said out loud, so green here is not read as "concurrency passed".
+      - name: Concurrency suite
+        run: |
+          if ! find test/concurrency -name '*.test.ts' 2>/dev/null | grep -q .; then
+            echo "::notice::no concurrency tests exist yet"
+            exit 0
+          fi
+          bun run test:concurrency
+      - if: failure()
+        run: docker compose logs --tail 100
+
+  image:
+    name: image builds and instances become ready
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: docker compose --profile app up -d --build --wait
+      - name: Three instances report ready
+        run: |
+          for port in 3001 3002 3003; do
+            curl --fail --silent --show-error "http://localhost:$port/health/ready"
+            echo
+          done
+      - if: failure()
+        run: docker compose --profile app logs --tail 100
+
+  docs:
+    name: documentation is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./.github/scripts/check-docs.sh
+
+  adr-immutability:
+    name: ADRs are amended, never rewritten
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: ./.github/scripts/check-adr-immutable.sh "${{ github.event.pull_request.base.sha }}"
+        continue-on-error: ${{ contains(github.event.pull_request.labels.*.name, 'adr-typo') }}
+
+  docs-with-code:
+    name: behaviour changes update documents
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: ./.github/scripts/check-docs-touched.sh "${{ github.event.pull_request.base.sha }}"
+        continue-on-error: ${{ contains(github.event.pull_request.labels.*.name, 'no-docs-needed') }}
+
+  commits:
+    name: conventional commits
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - name: Every commit in this pull request
+        run: bunx commitlint --from "${{ github.event.pull_request.base.sha }}" --to "${{ github.event.pull_request.head.sha }}"
+      - name: The pull request title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$TITLE" | bunx commitlint
+
+  ci-ok:
+    name: CI OK
+    if: always()
+    needs: [quality, integration, image, docs, adr-immutability, docs-with-code, commits]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          for result in ${{ join(needs.*.result, ' ') }}; do
+            case "$result" in
+              success|skipped) ;; # PR-only jobs are skipped on push
+              *) echo "::error::an upstream job reported '$result'"; exit 1 ;;
+            esac
+          done

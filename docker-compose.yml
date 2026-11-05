@@ -1,0 +1,75 @@
+# Local stack. `docker compose up -d --wait postgres sqs` is enough for tests;
+# `--profile app` adds three application instances, because correctness with
+# multiple instances is a requirement (NFR-03), not a production concern.
+name: wagering-processor
+
+x-app: &app
+  build: .
+  environment: &app-env
+    PORT: "3000"
+    APP_ROLES: api,consumer,publisher,reference-worker
+    DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+    AWS_REGION: us-east-1
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    SQS_ENDPOINT: http://sqs:4566
+    SHUTDOWN_TIMEOUT_MS: "25000"
+  depends_on:
+    setup:
+      condition: service_completed_successfully
+  # Without this, `up --wait` returns as soon as the process starts, before it listens.
+  healthcheck:
+    test: ["CMD", "bun", "-e", "const r = await fetch('http://localhost:3000/health/ready'); process.exit(r.ok ? 0 : 1)"]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+  # Longer than SHUTDOWN_TIMEOUT_MS, so Docker never kills a draining instance.
+  stop_grace_period: 30s
+  profiles: [app]
+
+services:
+  postgres:
+    image: postgres:18.1-alpine
+    environment:
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: wagering
+      POSTGRES_DB: wagering
+    ports: ["5433:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagering -d wagering"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes: [pgdata:/var/lib/postgresql]
+
+  sqs:
+    image: ministackorg/ministack:1.5.37
+    ports: ["4566:4566"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://localhost:4566/_ministack/health', timeout=1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  setup:
+    <<: *app
+    command: ["sh", "-c", "bun run migrate up && bun run provision"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      sqs: { condition: service_healthy }
+    restart: "no"
+    healthcheck: { disable: true }
+    stop_grace_period: 1s
+
+  app-1:
+    <<: *app
+    ports: ["3001:3000"]
+  app-2:
+    <<: *app
+    ports: ["3002:3000"]
+  app-3:
+    <<: *app
+    ports: ["3003:3000"]
+
+volumes:
+  pgdata:
