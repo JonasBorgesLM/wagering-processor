@@ -16,7 +16,11 @@ import { TEST_ENV } from "../support/env";
 // Broker semantics the consumer design relies on. An emulator can differ from
 // AWS here, and every line of consumer logic would silently depend on the difference.
 
-const sqs = new SQSClient({ region: TEST_ENV.AWS_REGION, endpoint: TEST_ENV.SQS_ENDPOINT });
+const sqs = new SQSClient({
+  region: TEST_ENV.AWS_REGION,
+  endpoint: TEST_ENV.SQS_ENDPOINT,
+  credentials: { accessKeyId: TEST_ENV.AWS_ACCESS_KEY_ID, secretAccessKey: TEST_ENV.AWS_SECRET_ACCESS_KEY },
+});
 const suffix = randomUUID().slice(0, 8);
 const MAX_RECEIVE = 2;
 let inputUrl: string;
