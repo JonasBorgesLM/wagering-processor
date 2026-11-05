@@ -9,6 +9,29 @@ export class WalletNotFoundError extends ApplicationError {
   override readonly name = "WalletNotFoundError";
 }
 
+/** A second wallet for a player and currency that already have one (FR-10). Not a replay: creating is not idempotent. */
+export class WalletAlreadyExistsError extends ApplicationError {
+  readonly code = "WALLET_ALREADY_EXISTS";
+  override readonly name = "WalletAlreadyExistsError";
+}
+
+export interface RequestIssue {
+  field: string;
+  reason: string;
+}
+
+/**
+ * What a caller sent cannot be acted on, and no resend of the same thing will
+ * change that. It lists every problem found, so a provider fixes them in one go.
+ */
+export class InvalidRequestError extends ApplicationError {
+  readonly code = "VALIDATION_ERROR";
+  override readonly name = "InvalidRequestError";
+  constructor(readonly issues: readonly RequestIssue[]) {
+    super(issues.map((issue) => `${issue.field}: ${issue.reason}`).join("; "));
+  }
+}
+
 /** The same key with a different payload: a different operation, never a replay (FR-53). */
 export class IdempotencyConflictError extends ApplicationError {
   readonly code = "IDEMPOTENCY_CONFLICT";
