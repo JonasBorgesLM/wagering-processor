@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, the settlement policy, the integration events and the payload hash exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
+> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, the settlement policy, the integration events, the payload hash and the schema exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
 
 ---
 
@@ -193,19 +193,27 @@ Outcomes are in REQUIREMENTS section 3.11. `SIGTERM` stops polling, finishes in-
 
 ## Schema
 
-The schema enforces what must hold even if the code is wrong (NFR-02). Designed, not yet migrated.
+The schema enforces what must hold even if the code is wrong (NFR-02). It is in `migrations/`, and every constraint below has a test in raw SQL that asserts which constraint refused the row. The triggers that make the ledger append-only come with issue #10.
 
 | Table | Guarantees in the database |
 | --- | --- |
-| `wallets` | `UNIQUE (player_id, currency)`, `CHECK (balance >= 0)`, `numeric(20,2)`, `CHECK (version >= 1)` |
-| `wager_transactions` | `UNIQUE (idempotency_key)`, `UNIQUE (provider_id, external_transaction_id)`, reference required for `REFUND`/`ROLLBACK`, partial `UNIQUE (reference_transaction_id)` for processed reversals, partial index on due retries |
-| `wallet_ledger_entries` | `UNIQUE (transaction_id)`, `UNIQUE (wallet_id, wallet_version)`, `CHECK (amount > 0)`, `CHECK` on before/after arithmetic, triggers rejecting `UPDATE`, `DELETE`, `TRUNCATE` |
+| `wallets` | `UNIQUE (player_id, currency)`; `balance >= 0`, in `numeric(20,2)`; `version >= 1`; currency shape |
+| `wager_transactions` | `UNIQUE (idempotency_key)`; `UNIQUE (provider_id, external_transaction_id)`; partial `UNIQUE (reference_transaction_id)` for processed reversals; a reference in the same wallet (composite foreign key); reference required for `REFUND`/`ROLLBACK` and refused on `BET`/`OPENING`; only `LOSS` may be zero; `OPENING` if and only if the provider is `internal`; a failure code exactly when the status calls for one, from the known list; `processed_at` exactly when `PROCESSED`; a balance on `PROCESSED` and `PENDING_REFERENCE`; a reference link exactly when processed with a declared reference |
+| `wallet_ledger_entries` | `UNIQUE (transaction_id)`; `UNIQUE (wallet_id, wallet_version)`; before/after arithmetic, which also refuses any other direction; `amount > 0`; non-negative balances; the wallet's currency and the transaction's wallet (composite foreign keys) |
 | `inbox_messages` | `PRIMARY KEY (consumer_name, message_id)` |
-| `outbox_messages` | Partial index on unpublished rows by `next_attempt_at` |
+| `outbox_messages` | Event id as primary key; `attempts >= 0`; partial index on unpublished rows by `next_attempt_at` |
 
 `wallet_version` on the ledger gives a stable order per wallet, the opaque cursor, and one more barrier: two entries cannot claim the same version.
 
-**What no constraint covers:** that a balance change has a ledger entry. That holds because both happen in one use case, and reconciliation detects a breach (FR-70).
+**What no constraint covers:**
+
+- That a balance change has a ledger entry, or that an entry's amount equals its transaction's. Both hold because they happen in one use case, and reconciliation detects a breach of the first (FR-70).
+- A third decimal. `numeric(20,2)` **rounds** on input rather than refusing, and a test pins that. `Money` is what refuses it (FR-01), which is why nothing else may write amounts.
+- A new failure code needs a migration, because the known list is in a `CHECK`. That is deliberate: the taxonomy is a contract with providers.
+
+**A lesson for later constraints:** a `CHECK` passes when its expression is `NULL`. A rejection with no failure code was accepted until the check used `coalesce`, so anything comparing a nullable column must say what `NULL` means.
+
+The columns for retrying `PENDING_REFERENCE` and their index arrive with the worker, in issue #19, where something uses and tests them.
 
 ## Patterns
 
@@ -296,7 +304,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | --- | --- | --- |
 | 0 | Base: tooling, CI, platform, runtime contracts, documents | Done |
 | 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, settlement policy, integration events, payload hash | Done |
-| 2 | Schema: migrations, constraints, triggers | Not started |
+| 2 | Schema: migrations, constraints, triggers, persistence records and mappers | In progress: migrations and constraints done |
 | 3 | Settlement use case and HTTP API | Not started |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Not started |
 | 5 | Outbox and publisher | Not started |
