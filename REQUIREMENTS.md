@@ -58,6 +58,7 @@ confirmed event, no negative balance. At the end of every test:
 - **FR-12** A zero `initialBalance` creates neither transaction nor ledger entry, and also starts at `version = 1`.
 - **FR-13** `version` increments only when the balance changes: never on `LOSS`, rejection, pending, or replay.
 - **FR-14** Every balance change has exactly one ledger entry, and every ledger entry corresponds to one balance change.
+- **FR-15** Each ledger entry records the `walletVersion` it produced, strictly increasing per wallet. The opening entry carries version 1, because opening sets the first state rather than changing it (FR-13). A wallet opened at zero has no entry for version 1.
 
 ### 3.3 Operations (§7)
 

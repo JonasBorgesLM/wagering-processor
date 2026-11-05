@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: early.** The platform layer, tooling, runtime contract tests and the `Money` value object exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
+> **Status: early.** The platform layer, tooling, runtime contract tests, `Money`, `Wallet` and `WalletLedgerEntry` exist and pass. Everything else under `src/wagering` and `src/messaging` below is **designed, not implemented**: those signatures have no bodies yet. See [Roadmap](#roadmap).
 
 ---
 
@@ -55,13 +55,18 @@ class Money {
   toString(): string;
 }
 
-class Wallet {
-  static open(props: OpenWalletProps): { wallet: Wallet; entry?: WalletLedgerEntry; opening?: WagerTransaction };
-  static rehydrate(state: WalletState): Wallet;
-  debit(money: Money, transactionId: string, at: Date): WalletLedgerEntry;   // raises on insufficient funds
-  credit(money: Money, transactionId: string, at: Date): WalletLedgerEntry;
-  canDebit(money: Money): boolean;
+class Wallet {                                  // implemented
+  /** version starts at 1 and the opening does not raise it (FR-13). A zero opening records no entry (FR-12). */
+  static open(props: OpenWalletProps): { wallet: Wallet; openingEntry: WalletLedgerEntry | undefined };
+  static rehydrate(state: WalletState): Wallet; // does not re-validate
+  /** Each change returns its ledger entry, built before the state changes: a refusal leaves the wallet untouched. */
+  debit(money: Money, movement: Movement): WalletLedgerEntry;   // InsufficientFundsError
+  credit(money: Money, movement: Movement): WalletLedgerEntry;  // BalanceLimitExceededError
+  canDebit(money: Money): boolean;              // lets a policy reject with a code instead of catching
+  canCredit(money: Money): boolean;
 }
+// Movement = { transactionId, entryId, at }: ids come from outside, so the domain stays deterministic.
+// The OPENING WagerTransaction belongs to the use case, which supplies its id; Wallet only records the entry.
 
 class WagerTransaction {
   static create(props: CreateWagerTransactionProps): WagerTransaction;
@@ -77,10 +82,11 @@ class WagerTransaction {
   ledgerDirectionFor(reference?: WagerTransaction): LedgerDirection;
 }
 
-class WalletLedgerEntry {                       // no mutable fields, no transitions
-  static create(props: CreateLedgerEntryProps): WalletLedgerEntry;
-  static rehydrate(state: LedgerEntryState): WalletLedgerEntry;
-  isBalanced(): boolean;
+class WalletLedgerEntry {                       // implemented; frozen, no transitions, dates copied in and out
+  static create(props: CreateLedgerEntryProps): WalletLedgerEntry;  // validates the arithmetic
+  static rehydrate(state: LedgerEntryState): WalletLedgerEntry;     // does not: reconciliation must be able to load a bad row
+  isBalanced(): boolean;                        // false for mixed currencies instead of throwing
+  // also carries walletVersion: the version the entry produced (FR-15)
 }
 
 /** Pure decision: the settlement order in REQUIREMENTS section 3.5, with no I/O. */
@@ -271,7 +277,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 0 | Base: tooling, CI, platform, runtime contracts, documents | Done |
-| 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, `SettlementPolicy` | In progress: `Money` done |
+| 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, `SettlementPolicy` | In progress: `Money`, `Wallet`, ledger entry done |
 | 2 | Schema: migrations, constraints, triggers | Not started |
 | 3 | Settlement use case and HTTP API | Not started |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Not started |

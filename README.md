@@ -4,7 +4,7 @@ A distributed financial service that applies betting operations from game provid
 
 Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge).
 
-> **Status: early.** The runtime, tooling, CI, documents and the `Money` value object are in place. **There is no wallet, transaction or ledger code yet**, so this does not process a bet today. See the [roadmap](ARCHITECTURE.md#roadmap).
+> **Status: early.** The runtime, tooling, CI, documents, `Money`, `Wallet` and the ledger entry are in place. **There is no wallet, transaction or ledger code yet**, so this does not process a bet today. See the [roadmap](ARCHITECTURE.md#roadmap).
 
 ---
 
@@ -15,6 +15,7 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 - `SIGTERM` drains through the shutdown hooks.
 - Structured JSON logs with an allowlist of fields.
 - `Money`: exact `bigint` arithmetic with strict contract parsing and no rounding path.
+- `Wallet` and `WalletLedgerEntry`: a balance that cannot go negative, whose every change returns the entry that records it, and an entry that cannot be built unbalanced or changed afterwards. These are domain classes only; nothing stores them yet.
 - Designed but not implemented: idempotency, duplicate control, consistency and resilience, described in [Patterns](ARCHITECTURE.md#patterns).
 - Contract tests on what the design relies on: row-lock serialization, the deadlock that fixes the lock order, exact `NUMERIC` strings, reversible migrations, FIFO group hold, deduplication, visibility and DLQ redrive.
 
