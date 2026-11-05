@@ -52,9 +52,12 @@ export class SettlementWorld {
     return this.database.url;
   }
 
-  static async create(options = { lockTimeoutMs: 2_000, statementTimeoutMs: 5_000 }) {
+  static async create(
+    options = { lockTimeoutMs: 2_000, statementTimeoutMs: 5_000 },
+    pool: { max?: number; acquireTimeoutMs?: number } = {},
+  ) {
     const database = await createTestDatabase();
-    const orm = await MikroORM.init(createOrmConfig(database.url, "migrations", wageringEntitySchemas));
+    const orm = await MikroORM.init(createOrmConfig(database.url, "migrations", wageringEntitySchemas, pool));
     await orm.migrator.up();
     return new SettlementWorld(orm, database, options);
   }
@@ -104,6 +107,22 @@ export class SettlementWorld {
       }
     });
     return { walletId: id, playerId };
+  }
+
+  /** Takes the wallet's row lock in a transaction of its own and keeps it until the returned function is called. */
+  async holdLock(walletId: string): Promise<() => Promise<void>> {
+    const held = deferred();
+    const release = deferred();
+    const holder = this.unitOfWork.run(async (tx) => {
+      await tx.wallets.lockById(walletId);
+      held.resolve();
+      await release.promise;
+    });
+    await held.promise;
+    return async () => {
+      release.resolve();
+      await holder;
+    };
   }
 
   async walletState(walletId: string) {

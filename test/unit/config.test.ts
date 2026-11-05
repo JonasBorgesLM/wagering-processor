@@ -37,6 +37,18 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...valid, STATEMENT_TIMEOUT_MS: "soon" })).toThrow(InvalidConfigError);
   });
 
+  test("has pool limits by default, and takes them from the environment", () => {
+    expect(loadConfig(valid)).toMatchObject({ databasePoolMax: 10, databaseAcquireTimeoutMs: 1_000 });
+    expect(
+      loadConfig({ ...valid, DATABASE_POOL_MAX: "4", DATABASE_ACQUIRE_TIMEOUT_MS: "250" }),
+    ).toMatchObject({
+      databasePoolMax: 4,
+      databaseAcquireTimeoutMs: 250,
+    });
+    expect(() => loadConfig({ ...valid, DATABASE_POOL_MAX: "0" })).toThrow(InvalidConfigError);
+    expect(() => loadConfig({ ...valid, DATABASE_ACQUIRE_TIMEOUT_MS: "-1" })).toThrow(InvalidConfigError);
+  });
+
   test.each(["0", "-1", "1.5", "abc", "1e3"])("rejects PORT=%s", (port) => {
     expect(() => loadConfig({ ...valid, PORT: port })).toThrow(InvalidConfigError);
   });
