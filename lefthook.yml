@@ -1,0 +1,18 @@
+# Same checks as CI, earlier. A hook can be skipped, so CI remains the guarantee.
+pre-commit:
+  parallel: true
+  commands:
+    format:
+      run: bunx biome check --no-errors-on-unmatched {staged_files}
+    money:
+      run: ./.github/scripts/check-money.sh
+commit-msg:
+  commands:
+    commitlint:
+      run: bunx commitlint --edit {1}
+pre-push:
+  commands:
+    typecheck:
+      run: bun run typecheck
+    unit:
+      run: bun run test:unit
