@@ -39,6 +39,12 @@ export interface TransactionContext {
   };
 }
 
+/** Reads of stored transactions, with no lock. Committed state only. */
+export interface TransactionReader {
+  findById(id: string): Promise<WagerTransaction | undefined>;
+  findByExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined>;
+}
+
 /** Reads that take no lock and change nothing. Committed state only. */
 export interface WalletReader {
   findWallet(id: string): Promise<Wallet | undefined>;

@@ -32,6 +32,21 @@ export class InvalidRequestError extends ApplicationError {
   }
 }
 
+/** No transaction with that id, or from that provider with that external id. */
+export class TransactionNotFoundError extends ApplicationError {
+  readonly code = "TRANSACTION_NOT_FOUND";
+  override readonly name = "TransactionNotFoundError";
+}
+
+/**
+ * A stored transaction that ended in an infrastructure failure, seen by a caller who asks again. Nothing the
+ * caller can change fixes it: resending the same key returns the same answer, so a new id is needed.
+ */
+export class SettlementFailedError extends ApplicationError {
+  readonly code = "SETTLEMENT_FAILED";
+  override readonly name = "SettlementFailedError";
+}
+
 /** The same key with a different payload: a different operation, never a replay (FR-53). */
 export class IdempotencyConflictError extends ApplicationError {
   readonly code = "IDEMPOTENCY_CONFLICT";

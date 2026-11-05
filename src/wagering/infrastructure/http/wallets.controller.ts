@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { Body, Controller, Get, HttpCode, Inject, Param, Post, Query, Req } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Inject, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { OpenWallet } from "../../application/open-wallet";
 import { QueryWallets, type WalletView } from "../../application/query-wallets";
 import type { WalletLedgerEntry } from "../../domain/wallet-ledger-entry";
 import type { CorrelatedRequest } from "./correlation";
+import { ProviderAuthGuard } from "./provider-auth.guard";
 import { parseLedgerQuery, parseOpenWalletBody, parseWalletId } from "./validation";
 
 // Thin on purpose: parse, call one use case, shape the answer. Nothing a rule depends on lives here.
@@ -30,6 +31,7 @@ function entryBody(entry: WalletLedgerEntry) {
   };
 }
 
+@UseGuards(ProviderAuthGuard)
 @Controller("wallets")
 export class WalletsController {
   constructor(

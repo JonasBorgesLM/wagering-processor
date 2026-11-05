@@ -1,11 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { NestExpressApplication } from "@nestjs/platform-express";
-import { BODY_LIMIT, createApp } from "../../src/app";
-import { loadConfig } from "../../src/platform/config/config";
-import { JsonLogger } from "../../src/platform/logging/json-logger";
-import { TEST_ENV } from "../support/env";
-import { provisionQueues } from "../support/queues";
+import { BODY_LIMIT } from "../../src/app";
+import { startApp } from "../support/app";
+import { call } from "../support/http";
 import { brl, command, SettlementWorld } from "../support/settlement";
 
 // The whole application as main builds it, on a real database, called over HTTP.
@@ -13,34 +11,12 @@ import { brl, command, SettlementWorld } from "../support/settlement";
 let world: SettlementWorld;
 let app: NestExpressApplication;
 let base: string;
-const logLines: string[] = [];
-
-const configFor = (databaseUrl: string, roles = "api") =>
-  loadConfig({
-    DATABASE_URL: databaseUrl,
-    AWS_REGION: TEST_ENV.AWS_REGION,
-    SQS_ENDPOINT: TEST_ENV.SQS_ENDPOINT,
-    PORT: "3000",
-    APP_ROLES: roles,
-  });
-
 async function start(databaseUrl: string, roles = "api") {
-  const instance = await createApp(
-    configFor(databaseUrl, roles),
-    new JsonLogger((line) => logLines.push(line)),
-  );
-  await instance.listen(0);
-  return { instance, url: (await instance.getUrl()).replace("[::1]", "localhost") };
+  const running = await startApp(databaseUrl, { roles });
+  return { instance: running.instance, url: running.url, running };
 }
 
 beforeAll(async () => {
-  // The application's SQS client uses the standard AWS credential chain, as it must in production. Built in this
-  // process it finds them only if the environment has them: on a developer machine Bun loads them from .env, and
-  // in CI nothing does, so readiness waited on credentials until its own 2 s timeout and answered 503.
-  process.env.AWS_ACCESS_KEY_ID ??= TEST_ENV.AWS_ACCESS_KEY_ID;
-  process.env.AWS_SECRET_ACCESS_KEY ??= TEST_ENV.AWS_SECRET_ACCESS_KEY;
-  // Readiness probes the queue, so it has to exist whatever ran before this file.
-  await provisionQueues();
   world = await SettlementWorld.create();
   const started = await start(world.databaseUrl());
   app = started.instance;
@@ -51,11 +27,6 @@ afterAll(async () => {
   await app.close();
   await world.destroy();
 });
-
-// Bun types a response body as unknown. These tests read arbitrary JSON and assert on it, so it is any here and only here.
-// biome-ignore lint/suspicious/noExplicitAny: a test helper over arbitrary JSON responses
-type Reply = Omit<Response, "json"> & { json(): Promise<any> };
-const call = async (...args: Parameters<typeof fetch>): Promise<Reply> => (await fetch(...args)) as Reply;
 
 const PLAYER = (): string => randomUUID();
 const post = (body: unknown, headers: Record<string, string> = {}) =>
@@ -415,10 +386,12 @@ describe("the platform endpoints keep their own contract", () => {
 describe("a database that cannot be reached is 503 (NFR-11)", () => {
   let broken: NestExpressApplication;
   let brokenUrl: string;
+  let brokenLogs: Array<Record<string, unknown>>;
   beforeAll(async () => {
     const started = await start("postgres://wagering:wagering@localhost:1/wagering");
     broken = started.instance;
     brokenUrl = started.url;
+    brokenLogs = started.running.logs;
   });
   afterAll(() => broken.close());
 
@@ -440,11 +413,9 @@ describe("a database that cannot be reached is 503 (NFR-11)", () => {
   });
 
   test("it is told apart from a bug: a warning in the log, never an error", async () => {
-    logLines.length = 0;
+    brokenLogs.length = 0;
     await call(`${brokenUrl}/wallets/${randomUUID()}`, { headers: { "x-correlation-id": "outage-1" } });
-    const entries = logLines
-      .map((line) => JSON.parse(line))
-      .filter((entry) => entry.correlationId === "outage-1");
+    const entries = brokenLogs.filter((entry) => entry.correlationId === "outage-1");
     expect(entries.map((entry) => entry.level)).toEqual(["warn"]);
   });
 

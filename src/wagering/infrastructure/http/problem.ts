@@ -2,15 +2,19 @@ import {
   type ArgumentsHost,
   Catch,
   type ExceptionFilter,
+  ForbiddenException,
   HttpException,
   type LoggerService,
   NotFoundException,
+  UnauthorizedException,
 } from "@nestjs/common";
 import {
   ExternalIdConflictError,
   IdempotencyConflictError,
   InvalidRequestError,
   type RequestIssue,
+  SettlementFailedError,
+  TransactionNotFoundError,
   TransientFailureError,
   WalletAlreadyExistsError,
   WalletNotFoundError,
@@ -56,6 +60,15 @@ export function toProblem(error: unknown): Problem {
     };
   }
   if (error instanceof WalletNotFoundError) return problem(404, error.code, "no such wallet");
+  if (error instanceof TransactionNotFoundError) return problem(404, error.code, "no such transaction");
+  // Terminal and not the provider's doing, so neither a 4xx nor a 503: asking again returns the same answer.
+  if (error instanceof SettlementFailedError) {
+    return problem(
+      500,
+      error.code,
+      "this transaction could not be settled and will not be retried; send it again under a new id",
+    );
+  }
   if (error instanceof WalletAlreadyExistsError) {
     return problem(409, error.code, "this player already has a wallet in this currency");
   }
@@ -76,6 +89,8 @@ export function toProblem(error: unknown): Problem {
   const status = httpStatusOf(error);
   if (status === 413) return problem(413, "PAYLOAD_TOO_LARGE", "the request body is too large");
   if (status === 404) return problem(404, "NOT_FOUND", "no such route");
+  if (status === 401) return problem(401, "UNAUTHORIZED", "authentication is required");
+  if (status === 403) return problem(403, "FORBIDDEN", "this caller is not allowed to do that");
   if (status === 415) return problem(415, "UNSUPPORTED_MEDIA_TYPE", "the content type is not supported");
   if (status === 400) return problem(400, "VALIDATION_ERROR", "the request body is not valid JSON");
   if (status !== undefined && status >= 400 && status < 500)
@@ -104,6 +119,18 @@ interface HttpRequest {
   correlationId?: string;
 }
 
+/**
+ * Framework exceptions that get the envelope: an unknown route is a caller's mistake like any other, and a guard's
+ * refusal has to look the same as every other refusal. Any other `HttpException` keeps its own body.
+ */
+function isEnveloped(exception: HttpException): boolean {
+  return (
+    exception instanceof NotFoundException ||
+    exception instanceof UnauthorizedException ||
+    exception instanceof ForbiddenException
+  );
+}
+
 /** Writes the answer for an error. Shared by the filter and the middleware below, so both answer the same way. */
 function respond(
   exception: unknown,
@@ -114,7 +141,7 @@ function respond(
   // An HttpException carries its own status and body on purpose: the readiness endpoint answers 503 with which
   // dependency is down, and a monitor reads that. This envelope is for the business endpoints. An unknown route
   // is the exception, since it is a caller's mistake like any other.
-  if (exception instanceof HttpException && !(exception instanceof NotFoundException)) {
+  if (exception instanceof HttpException && !isEnveloped(exception)) {
     if (!response.headersSent) response.status(exception.getStatus()).json(exception.getResponse());
     return;
   }
