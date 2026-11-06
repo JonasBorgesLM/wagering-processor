@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  DeleteMessageCommand,
   GetQueueAttributesCommand,
   GetQueueUrlCommand,
   PurgeQueueCommand,
@@ -157,3 +158,38 @@ export const started = (consumer: WagerQueueConsumer) => {
   consumer.onApplicationBootstrap();
   return consumer;
 };
+
+export let eventsUrl: string;
+
+/** Also needs the events queue: for the tests that follow an event from the outbox to the broker. */
+export async function setUpEventsQueue(): Promise<void> {
+  eventsUrl = (await sqs.send(new GetQueueUrlCommand({ QueueName: QUEUES.events }))).QueueUrl as string;
+}
+
+export async function purgeEvents(): Promise<void> {
+  await sqs.send(new PurgeQueueCommand({ QueueUrl: eventsUrl })).catch(() => undefined);
+}
+
+/** Every event in the events queue now, deleted as it is read, as the ids and types the envelopes carry. */
+export async function drainEvents(): Promise<
+  Array<{ eventId: string; eventType: string; aggregateId: string }>
+> {
+  const all: Array<{ eventId: string; eventType: string; aggregateId: string }> = [];
+  for (let empty = 0; empty < 2; ) {
+    const received = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: eventsUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 1 }),
+    );
+    const messages = received.Messages ?? [];
+    empty = messages.length === 0 ? empty + 1 : 0;
+    for (const message of messages) {
+      const body = JSON.parse(message.Body ?? "{}") as {
+        eventId: string;
+        eventType: string;
+        aggregateId: string;
+      };
+      all.push({ eventId: body.eventId, eventType: body.eventType, aggregateId: body.aggregateId });
+      await sqs.send(new DeleteMessageCommand({ QueueUrl: eventsUrl, ReceiptHandle: message.ReceiptHandle }));
+    }
+  }
+  return all;
+}
