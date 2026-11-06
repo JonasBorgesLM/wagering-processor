@@ -45,6 +45,7 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
     private readonly sqs: SQSClient,
     private readonly useCase: SubmitWagerTransaction,
     private readonly options: ConsumerOptions,
+    private readonly drain: { begin(signal?: string): void } = { begin: () => undefined },
   ) {}
 
   onApplicationBootstrap(): void {
@@ -60,7 +61,9 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
    * Observed on the emulator, and AWS documents the same hazard. That is why a poll is short (`QUEUE_WAIT_SECONDS`):
    * it bounds how long stopping can take.
    */
-  async beforeApplicationShutdown(): Promise<void> {
+  async beforeApplicationShutdown(signal?: string): Promise<void> {
+    // Before the wait below: readiness must fail while the message in hand finishes, not after (FR-80).
+    this.drain.begin(signal);
     this.abort.abort();
     await this.loop;
   }
@@ -122,12 +125,42 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
    */
   private async handleBatch(queues: Queues, messages: Message[]): Promise<void> {
     const blocked = new Set<string>();
-    for (const message of messages) {
-      if (this.stopping) return;
+    for (const [index, message] of messages.entries()) {
+      if (this.stopping) {
+        await this.release(queues.input, messages.slice(index));
+        return;
+      }
       const group = message.Attributes?.MessageGroupId ?? message.MessageId ?? "";
       if (blocked.has(group)) continue;
       if (!(await this.handle(queues, message))) blocked.add(group);
     }
+  }
+
+  /**
+   * Makes messages that were received and not started visible again at once (FR-80). Left alone they would stay
+   * hidden for the whole visibility timeout, and the wallets behind them would wait with them. If this fails the
+   * timeout does the same later: shutdown is an optimization of recovery, not the guarantee.
+   */
+  private async release(queueUrl: string, messages: Message[]): Promise<void> {
+    await Promise.all(
+      messages.map((message) =>
+        this.sqs
+          .send(
+            new ChangeMessageVisibilityCommand({
+              QueueUrl: queueUrl,
+              ReceiptHandle: message.ReceiptHandle,
+              VisibilityTimeout: 0,
+            }),
+          )
+          .catch((error: unknown) =>
+            this.logger.warn("Returning a message failed; its visibility will run out", {
+              messageId: message.MessageId,
+              error: describe(error),
+            }),
+          ),
+      ),
+    );
+    this.logger.log(`Returned ${messages.length} unstarted message(s) to the queue`);
   }
 
   /** Whether the message is finished with, so the next of its wallet may go. */
