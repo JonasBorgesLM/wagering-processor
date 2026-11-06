@@ -41,6 +41,7 @@ bun run typecheck
 bun run lint
 bun run test:unit
 bun run test:integration
+bun run test:concurrency
 bun run check:docs
 ```
 
