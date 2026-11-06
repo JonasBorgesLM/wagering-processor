@@ -22,6 +22,8 @@ export interface AppConfig {
   readonly databasePoolMax: number;
   /** How long a request waits for a free connection before giving up as a transient failure (NFR-11). */
   readonly databaseAcquireTimeoutMs: number;
+  /** How long one poll of the input queue waits for a message. Also the longest stopping the consumer can take. */
+  readonly queueWaitSeconds: number;
 }
 
 export class InvalidConfigError extends Error {
@@ -41,6 +43,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     statementTimeoutMs: positiveInteger(env, "STATEMENT_TIMEOUT_MS", 5_000),
     databasePoolMax: positiveInteger(env, "DATABASE_POOL_MAX", 10),
     databaseAcquireTimeoutMs: positiveInteger(env, "DATABASE_ACQUIRE_TIMEOUT_MS", 1_000),
+    queueWaitSeconds: boundedInteger(env, "QUEUE_WAIT_SECONDS", 5, 20),
   };
 }
 
@@ -55,6 +58,18 @@ function positiveInteger(env: Record<string, string | undefined>, name: string, 
   if (raw === undefined || raw === "") return fallback;
   if (!/^[1-9][0-9]*$/.test(raw)) throw new InvalidConfigError(`${name} must be a positive integer`);
   return Number(raw);
+}
+
+/** SQS refuses a wait over 20 seconds, so a larger value is a mistake to report now and not at the first poll. */
+function boundedInteger(
+  env: Record<string, string | undefined>,
+  name: string,
+  fallback: number,
+  max: number,
+): number {
+  const value = positiveInteger(env, name, fallback);
+  if (value > max) throw new InvalidConfigError(`${name} must be at most ${max}`);
+  return value;
 }
 
 function parseRoles(raw: string | undefined): ReadonlySet<Role> {

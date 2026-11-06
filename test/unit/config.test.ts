@@ -49,6 +49,13 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...valid, DATABASE_ACQUIRE_TIMEOUT_MS: "-1" })).toThrow(InvalidConfigError);
   });
 
+  test("a poll waits 5 seconds by default, and never more than the 20 SQS allows", () => {
+    expect(loadConfig(valid).queueWaitSeconds).toBe(5);
+    expect(loadConfig({ ...valid, QUEUE_WAIT_SECONDS: "20" }).queueWaitSeconds).toBe(20);
+    expect(() => loadConfig({ ...valid, QUEUE_WAIT_SECONDS: "21" })).toThrow(InvalidConfigError);
+    expect(() => loadConfig({ ...valid, QUEUE_WAIT_SECONDS: "0" })).toThrow(InvalidConfigError);
+  });
+
   test.each(["0", "-1", "1.5", "abc", "1e3"])("rejects PORT=%s", (port) => {
     expect(() => loadConfig({ ...valid, PORT: port })).toThrow(InvalidConfigError);
   });

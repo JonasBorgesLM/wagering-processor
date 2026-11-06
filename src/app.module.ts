@@ -20,7 +20,7 @@ export class AppModule {
         SqsModule,
         MetricsModule,
         HealthModule,
-        WageringModule.register({ api: config.roles.has("api") }),
+        WageringModule.register({ api: config.roles.has("api"), consumer: config.roles.has("consumer") }),
       ],
     };
   }
