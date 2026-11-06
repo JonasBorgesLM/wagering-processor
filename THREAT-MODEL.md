@@ -93,8 +93,8 @@ queue ───SQS────▶ [ consumer ]┘                          │
 
 ### T-10 — Poison message blocks a wallet
 **Actor:** queue producer. **Impact:** a FIFO group stalls, delaying that wallet.
-**Mitigation:** FR-80, IR-02 and the DLQ outcomes in §3.11 of the requirements.
-**Residual:** the wallet's later messages wait until the attempts run out.
+**Mitigation:** FR-83, FR-80, IR-02 and the DLQ outcomes in §3.11 of the requirements. A permanent failure is dead-lettered at its first delivery and does not hold its wallet; a transient one is retried with a growing backoff and dead-lettered after 5 deliveries.
+**Residual:** a message that keeps failing transiently holds its wallet's later messages for its backoff (2 to 30 s), 5 times. And the other side of the same bound: with the defaults, a database outage longer than about 30 s dead-letters the messages that were in flight. Nothing is lost and replaying them from the DLQ is safe (idempotency), but it is an operator's job, and the defaults are judgements and not measured.
 
 ### T-11 — Resource exhaustion
 **Actor:** any HTTP caller. **Impact:** connection pool or lock pile-up, huge payloads.
