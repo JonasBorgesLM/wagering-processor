@@ -18,7 +18,9 @@ import type {
   PendingReferenceStore,
   ReconciliationReader,
   TransactionReader,
+  TransientReason,
   UnitOfWork,
+  WageringMetrics,
   WalletReader,
 } from "../application/ports";
 import { PublishOutbox } from "../application/publish-outbox";
@@ -32,6 +34,8 @@ import { WalletsController } from "./http/wallets.controller";
 import { SqsEventPublisher } from "./messaging/sqs-event-publisher";
 import { WagerQueueConsumer } from "./messaging/wager-queue-consumer";
 import { PrometheusDivergenceReporter } from "./metrics/prometheus-divergence-reporter";
+import { PrometheusMetrics, registerOutboxGauges } from "./metrics/prometheus-metrics";
+import { measureOutbox } from "./persistence/mikro-orm-outbox-lag";
 import { MikroOrmOutboxStore } from "./persistence/mikro-orm-outbox-store";
 import { MikroOrmPendingReferenceStore } from "./persistence/mikro-orm-pending-reference-store";
 import { MikroOrmReconciliationReader } from "./persistence/mikro-orm-reconciliation-reader";
@@ -53,6 +57,8 @@ export const PENDING_REFERENCE_STORE = Symbol("PENDING_REFERENCE_STORE");
 export const REFERENCE_WORKER = Symbol("REFERENCE_WORKER");
 export const RECONCILIATION_READER = Symbol("RECONCILIATION_READER");
 export const DIVERGENCE_REPORTER = Symbol("DIVERGENCE_REPORTER");
+export const METRICS = Symbol("METRICS");
+export const OUTBOX_GAUGES = Symbol("OUTBOX_GAUGES");
 
 /** Every controller that serves business routes, so a test can check that each carries the auth guard. */
 export const BUSINESS_CONTROLLERS = [WalletsController, TransactionsController];
@@ -66,32 +72,47 @@ export class WageringModule {
     publisher: boolean;
     referenceWorker: boolean;
   }): DynamicModule {
-    const limits = (config: AppConfig) => ({
+    const limits = (config: AppConfig, metrics: WageringMetrics) => ({
       lockTimeoutMs: config.lockTimeoutMs,
       statementTimeoutMs: config.statementTimeoutMs,
+      onTransientFailure: (reason: TransientReason) => metrics.databaseTransient(reason),
     });
     return {
       module: WageringModule,
       imports: [MetricsModule],
       providers: [
         { provide: CLOCK, useValue: new SystemClock() },
+        {
+          provide: METRICS,
+          inject: [Registry],
+          useFactory: (registry: Registry) => new PrometheusMetrics(registry),
+        },
         { provide: ID_GENERATOR, useValue: new UuidV7Generator() },
         {
           provide: UNIT_OF_WORK,
-          inject: [MikroORM, CLOCK, APP_CONFIG],
-          useFactory: (orm: MikroORM, clock: Clock, config: AppConfig) =>
-            new MikroOrmUnitOfWork(orm, clock, limits(config)),
+          inject: [MikroORM, CLOCK, APP_CONFIG, METRICS],
+          useFactory: (orm: MikroORM, clock: Clock, config: AppConfig, metrics: WageringMetrics) =>
+            new MikroOrmUnitOfWork(orm, clock, limits(config, metrics)),
         },
         {
           provide: WALLET_READER,
-          inject: [MikroORM, APP_CONFIG],
-          useFactory: (orm: MikroORM, config: AppConfig) => new MikroOrmWalletReader(orm, limits(config)),
+          inject: [MikroORM, APP_CONFIG, METRICS],
+          useFactory: (orm: MikroORM, config: AppConfig, metrics: WageringMetrics) =>
+            new MikroOrmWalletReader(orm, limits(config, metrics)),
+        },
+        {
+          provide: OUTBOX_GAUGES,
+          inject: [MikroORM, APP_CONFIG, METRICS, Registry],
+          useFactory: (orm: MikroORM, config: AppConfig, metrics: WageringMetrics, registry: Registry) => {
+            registerOutboxGauges(registry, measureOutbox(orm, limits(config, metrics)));
+            return true;
+          },
         },
         {
           provide: RECONCILIATION_READER,
-          inject: [MikroORM, APP_CONFIG],
-          useFactory: (orm: MikroORM, config: AppConfig) =>
-            new MikroOrmReconciliationReader(orm, limits(config)),
+          inject: [MikroORM, APP_CONFIG, METRICS],
+          useFactory: (orm: MikroORM, config: AppConfig, metrics: WageringMetrics) =>
+            new MikroOrmReconciliationReader(orm, limits(config, metrics)),
         },
         {
           provide: DIVERGENCE_REPORTER,
@@ -116,9 +137,9 @@ export class WageringModule {
         },
         {
           provide: TRANSACTION_READER,
-          inject: [MikroORM, APP_CONFIG],
-          useFactory: (orm: MikroORM, config: AppConfig) =>
-            new MikroOrmTransactionReader(orm, limits(config)),
+          inject: [MikroORM, APP_CONFIG, METRICS],
+          useFactory: (orm: MikroORM, config: AppConfig, metrics: WageringMetrics) =>
+            new MikroOrmTransactionReader(orm, limits(config, metrics)),
         },
         {
           provide: QueryTransactions,
@@ -127,19 +148,29 @@ export class WageringModule {
         },
         {
           provide: SubmitWagerTransaction,
-          inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR, APP_CONFIG],
-          useFactory: (uow: UnitOfWork, clock: Clock, ids: IdGenerator, config: AppConfig) =>
-            new SubmitWagerTransaction(uow, clock, ids, {
-              firstReferenceRetryMs: config.referenceRetryBaseSeconds * 1000,
-            }),
+          inject: [UNIT_OF_WORK, CLOCK, ID_GENERATOR, APP_CONFIG, METRICS],
+          useFactory: (
+            uow: UnitOfWork,
+            clock: Clock,
+            ids: IdGenerator,
+            config: AppConfig,
+            metrics: WageringMetrics,
+          ) =>
+            new SubmitWagerTransaction(
+              uow,
+              clock,
+              ids,
+              { firstReferenceRetryMs: config.referenceRetryBaseSeconds * 1000 },
+              metrics,
+            ),
         },
         ...(options.publisher
           ? [
               {
                 provide: OUTBOX_STORE,
-                inject: [MikroORM, APP_CONFIG],
-                useFactory: (orm: MikroORM, config: AppConfig) =>
-                  new MikroOrmOutboxStore(orm, limits(config)),
+                inject: [MikroORM, APP_CONFIG, METRICS],
+                useFactory: (orm: MikroORM, config: AppConfig, metrics: WageringMetrics) =>
+                  new MikroOrmOutboxStore(orm, limits(config, metrics)),
               },
               {
                 provide: EVENT_PUBLISHER,
@@ -148,23 +179,30 @@ export class WageringModule {
               },
               {
                 provide: PublishOutbox,
-                inject: [OUTBOX_STORE, EVENT_PUBLISHER, CLOCK, APP_CONFIG],
+                inject: [OUTBOX_STORE, EVENT_PUBLISHER, CLOCK, APP_CONFIG, METRICS],
                 useFactory: (
                   store: OutboxStore,
                   publisher: EventPublisher,
                   clock: Clock,
                   config: AppConfig,
+                  metrics: WageringMetrics,
                 ) =>
-                  new PublishOutbox(store, publisher, clock, {
-                    batchSize: config.outboxBatchSize,
-                    leaseMs: config.outboxLeaseMs,
-                    retryDelayMs: (attempts) =>
-                      1000 *
-                      backoffSeconds(attempts, {
-                        baseSeconds: config.outboxRetryBaseSeconds,
-                        capSeconds: config.outboxRetryCapSeconds,
-                      }),
-                  }),
+                  new PublishOutbox(
+                    store,
+                    publisher,
+                    clock,
+                    {
+                      batchSize: config.outboxBatchSize,
+                      leaseMs: config.outboxLeaseMs,
+                      retryDelayMs: (attempts) =>
+                        1000 *
+                        backoffSeconds(attempts, {
+                          baseSeconds: config.outboxRetryBaseSeconds,
+                          capSeconds: config.outboxRetryCapSeconds,
+                        }),
+                    },
+                    metrics,
+                  ),
               },
               {
                 provide: OUTBOX_WORKER,
@@ -196,31 +234,39 @@ export class WageringModule {
           ? [
               {
                 provide: PENDING_REFERENCE_STORE,
-                inject: [MikroORM, APP_CONFIG],
-                useFactory: (orm: MikroORM, config: AppConfig) =>
-                  new MikroOrmPendingReferenceStore(orm, limits(config)),
+                inject: [MikroORM, APP_CONFIG, METRICS],
+                useFactory: (orm: MikroORM, config: AppConfig, metrics: WageringMetrics) =>
+                  new MikroOrmPendingReferenceStore(orm, limits(config, metrics)),
               },
               {
                 provide: SettleWaitingReferences,
-                inject: [PENDING_REFERENCE_STORE, UNIT_OF_WORK, CLOCK, ID_GENERATOR, APP_CONFIG],
+                inject: [PENDING_REFERENCE_STORE, UNIT_OF_WORK, CLOCK, ID_GENERATOR, APP_CONFIG, METRICS],
                 useFactory: (
                   store: PendingReferenceStore,
                   uow: UnitOfWork,
                   clock: Clock,
                   ids: IdGenerator,
                   config: AppConfig,
+                  metrics: WageringMetrics,
                 ) =>
-                  new SettleWaitingReferences(store, uow, clock, ids, {
-                    batchSize: config.referenceBatchSize,
-                    leaseMs: config.referenceLeaseMs,
-                    ttlMs: config.referenceTtlSeconds * 1000,
-                    retryDelayMs: (attempts) =>
-                      1000 *
-                      backoffSeconds(attempts, {
-                        baseSeconds: config.referenceRetryBaseSeconds,
-                        capSeconds: config.referenceRetryCapSeconds,
-                      }),
-                  }),
+                  new SettleWaitingReferences(
+                    store,
+                    uow,
+                    clock,
+                    ids,
+                    {
+                      batchSize: config.referenceBatchSize,
+                      leaseMs: config.referenceLeaseMs,
+                      ttlMs: config.referenceTtlSeconds * 1000,
+                      retryDelayMs: (attempts) =>
+                        1000 *
+                        backoffSeconds(attempts, {
+                          baseSeconds: config.referenceRetryBaseSeconds,
+                          capSeconds: config.referenceRetryCapSeconds,
+                        }),
+                    },
+                    metrics,
+                  ),
               },
               {
                 provide: REFERENCE_WORKER,
@@ -241,6 +287,16 @@ export class WageringModule {
                           `${r.transientFailures} could not be settled now; they will be tried again`,
                         );
                       }
+                      for (const decision of r.decisions) {
+                        logger.log("Waiting transaction decided", {
+                          correlationId: decision.transactionId,
+                          transactionId: decision.transactionId,
+                          walletId: decision.walletId,
+                          providerId: decision.providerId,
+                          status: decision.status,
+                          failureCode: decision.failureCode,
+                        });
+                      }
                       for (const error of r.errors) {
                         logger.error("A transaction could not be settled and is now FAILED", {
                           error: describe(error),
@@ -259,12 +315,13 @@ export class WageringModule {
           ? [
               {
                 provide: WagerQueueConsumer,
-                inject: [SQSClient, SubmitWagerTransaction, APP_CONFIG, DrainState],
+                inject: [SQSClient, SubmitWagerTransaction, APP_CONFIG, DrainState, METRICS],
                 useFactory: (
                   sqs: SQSClient,
                   useCase: SubmitWagerTransaction,
                   config: AppConfig,
                   drain: DrainState,
+                  metrics: WageringMetrics,
                 ) =>
                   new WagerQueueConsumer(
                     sqs,
@@ -278,6 +335,7 @@ export class WageringModule {
                       maxReceives: MAX_RECEIVE_COUNT,
                     },
                     drain,
+                    metrics,
                   ),
               },
             ]

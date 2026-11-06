@@ -332,6 +332,16 @@ A duplicate is stopped at several independent layers, so no single one has to be
 - **Eventual outside it:** events arrive after commit, at least once, and may reorder, so they carry `walletVersion`.
 - **Detected, not assumed:** reconciliation compares the balance with the ledger and never corrects it (FR-72).
 
+### Observability
+
+`WageringMetrics` is a port in the application layer (`NO_METRICS` by default), implemented by `PrometheusMetrics` on the registry `/metrics` serves. Each method is a fact that already happened and returns nothing: a metric never decides, and one that fails must not fail what it measures. The settlement use case counts a decision or a replay after the fact and times itself; the consumer counts retries and dead letters; the outbox and the reference worker count what they put back; the unit of work reports every transient database failure through `onTransientFailure`, which is how lock conflicts are counted wherever they happen, reads and workers included.
+
+- **Lock conflicts need a patient transaction to show a deadlock.** A lock timeout shorter than PostgreSQL's deadlock detection (1 s) ends a would-be deadlock as a lock timeout first. The test for the deadlock series uses transactions that wait longer; the default `LOCK_TIMEOUT_MS` of 2 s is above the detection time, so in production a real deadlock is reported as one.
+- **Outbox lag is read when scraped,** by a query over the unpublished rows, and a failure to read keeps the last value instead of a zero that would read as "caught up". It costs a scan of the backlog (the partial index) per scrape per process.
+- **Labels are a closed set.** `source`, `kind`, `status`, `reason` and `component` are enumerations. The wallet is not a label.
+- **Logs.** Every settlement line carries the correlation id, the transaction, the wallet and the provider; the allowlist in `JsonLogger` is the last defence and a test is the first: it searches every line for values from the payload. A mutation that put a payload value in the message text, which the allowlist cannot see, was caught by that test.
+- **Not provided:** tracing (OpenTelemetry is optional in the challenge), dashboards and alert rules. The cost of the settlement timer is one clock read at each end.
+
 ### Reconciliation
 
 `ReconcileWallet` reads a `LedgerSnapshot` through `ReconciliationReader` and tells a `DivergenceReporter`. The reader is one SQL statement: the wallet row and every entry of the wallet in the same snapshot, with the sum of credits, the sum of debits, the count, and the entries that fail a check, found with a window function (`lag(balance_after)`). It takes no lock.
@@ -419,6 +429,6 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 4 | SQS consumer, inbox, DLQ, shutdown | Consumer and inbox done (#15); backoff and DLQ done (#16); consumer shutdown done (#17) |
 | 5 | Outbox and publisher | Done (#18) |
 | 6 | Out-of-order references worker | Done (#19) |
-| 7 | Reconciliation and observability | Reconciliation done (#20); metrics and logs (#21) not started |
+| 7 | Reconciliation and observability | Done (#20, #21) |
 | 8 | Multi-process failure suite (challenge §13) | Not started |
 | 9 | Final documents, optional load test, release | Not started |

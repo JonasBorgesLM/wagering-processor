@@ -4,7 +4,7 @@ import {
   TransientFailureError,
   WalletAlreadyExistsError,
 } from "../../application/errors";
-import type { Clock, TransactionContext, UnitOfWork } from "../../application/ports";
+import type { Clock, TransactionContext, TransientReason, UnitOfWork } from "../../application/ports";
 import { WagerTransactionKind, WagerTransactionStatus } from "../../domain/wager-transaction";
 import {
   ledgerEntryToRecord,
@@ -18,6 +18,8 @@ import { LedgerEntrySchema, WagerTransactionSchema, WalletSchema } from "./schem
 export interface UnitOfWorkOptions {
   lockTimeoutMs: number;
   statementTimeoutMs: number;
+  /** Told of every transient failure, so lock conflicts and the rest can be counted wherever they happen (NFR-06). */
+  onTransientFailure?: (reason: TransientReason) => void;
 }
 
 /** The unique keys that mean "this operation already exists". Any other violation is a bug and must stay loud. */
@@ -39,6 +41,25 @@ interface DatabaseError {
   sqlState?: unknown;
   constraint?: unknown;
   message?: unknown;
+}
+
+/** Why a transient failure was transient, as a label that stays within a closed set. */
+export function transientReason(error: unknown): TransientReason {
+  const { code, sqlState, message } = (error ?? {}) as DatabaseError;
+  const state = typeof sqlState === "string" ? sqlState : typeof code === "string" ? code : "";
+  if (String(message ?? "").includes(POOL_TIMEOUT_MESSAGE)) return "pool_timeout";
+  if (state === "55P03") return "lock_timeout";
+  if (state === "40P01") return "deadlock";
+  if (state === "40001") return "serialization_failure";
+  if (state === "57014") return "statement_timeout";
+  if (
+    state.startsWith(TRANSIENT_SQLSTATE_CLASS) ||
+    TRANSIENT_NETWORK_CODES.has(state) ||
+    state.startsWith("57P")
+  ) {
+    return "connection";
+  }
+  return "other";
 }
 
 /** What a failed transaction means to the caller. Returns the error to throw, which may be the original. */
@@ -95,7 +116,15 @@ export async function boundedTransaction<T>(
       return await work(em);
     });
   } catch (error) {
-    throw classifyPersistenceError(error);
+    const classified = classifyPersistenceError(error);
+    if (classified instanceof TransientFailureError) {
+      try {
+        options.onTransientFailure?.(transientReason(error));
+      } catch {
+        // Counting must never change what the caller sees.
+      }
+    }
+    throw classified;
   }
 }
 

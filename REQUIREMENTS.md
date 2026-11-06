@@ -325,7 +325,7 @@ Every event is stored in the outbox and published as this envelope. `eventType` 
 
 ## 4. Security requirements
 
-- **SR-01** Logs carry correlation ids and no sensitive data or full financial payloads (§12).
+- **SR-01** Logs carry correlation ids and no sensitive data or full financial payloads (§12). The logger writes only an allowlist of fields (`correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`, `failureCode`, `status`, `durationMs`, `error`), so a field nobody thought of cannot leak. A log message is a fixed sentence and never built from request data. A refused request logs its code, not its message.
 - **SR-02** Every provider field from the queue passes the same domain validation as HTTP (§2).
 - **SR-03** Without authentication, any caller can act as any provider. This is accepted by §2 and is **not** mitigated by anything else here; the extension point and intended design are in [ADR-0009](docs/adr/0009-authentication-is-a-documented-extension-point.md).
 - **SR-04** Input is bounded: request body size, `Idempotency-Key` and identifier lengths, ledger page size. No unbounded value reaches a query, an index or a log.
@@ -341,7 +341,7 @@ Every event is stored in the outbox and published as this envelope. `eventType` 
 - **NFR-03** No global lock. The concurrency unit is `walletId` (§5.6, §8). Correct with three or more instances (§5.8).
 - **NFR-04** Inbox, financial change, ledger and outbox share one SQL transaction. Ack and publication happen only after commit (§5.4, §6.5, §10).
 - **NFR-05** The broker's ordering and dedup are optimizations, never the guarantee (§5.3, §8).
-- **NFR-06** Metrics: transactions by status, duplicates, retries, DLQ messages, lock conflicts, outbox lag, processing latency (§12).
+- **NFR-06** Metrics: transactions by status, duplicates, retries, DLQ messages, lock conflicts, outbox lag, processing latency (§12). Each is a series served at `/metrics` (listed in the README) and each moves in a test that causes it. Labels come from a closed set and never from a request, so the number of series is bounded. Outbox lag is measured when scraped, from the table, so it is true of the whole system whichever process answers.
 - **NFR-07** All required tests in §13 run against real PostgreSQL and real LocalStack or MiniStack, with real parallelism.
 - **NFR-08** All project text, code and commits are in English. Gitflow with Conventional Commits, checked on every commit and on the PR title.
 - **NFR-09** Dependencies point inward: `domain` imports only itself; `application` imports domain and its own ports, never an adapter or framework. Checked by `check-boundaries.sh`, which also fails if it analysed nothing, and by `test/unit/architecture.test.ts`, which breaks each rule once on a throwaway tree and expects exactly those violations.

@@ -17,7 +17,14 @@ import {
   WalletNotFoundError,
 } from "./errors";
 import { payloadHash } from "./payload-hash";
-import type { Clock, IdGenerator, TransactionContext, UnitOfWork } from "./ports";
+import {
+  type Clock,
+  type IdGenerator,
+  NO_METRICS,
+  type TransactionContext,
+  type UnitOfWork,
+  type WageringMetrics,
+} from "./ports";
 import { applyOutcome } from "./settlement-outcome";
 
 export interface SubmitWagerTransactionCommand {
@@ -67,16 +74,42 @@ export class SubmitWagerTransaction {
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
     private readonly options: SubmitOptions = { firstReferenceRetryMs: 5_000 },
+    private readonly metrics: WageringMetrics = NO_METRICS,
   ) {}
 
   async execute(command: SubmitWagerTransactionCommand, source?: MessageSource): Promise<SubmissionResult> {
+    const origin = source ? "sqs" : "http";
+    const started = performance.now();
+    const timed = (outcome: "decided" | "replay" | "error") =>
+      this.metrics.settlementTimed({
+        source: origin,
+        outcome,
+        seconds: (performance.now() - started) / 1000,
+      });
+
+    let result: SubmissionResult;
     try {
-      return await this.attempt(command, source);
+      try {
+        result = await this.attempt(command, source);
+      } catch (error) {
+        if (!(error instanceof DuplicateOperationError)) throw error;
+        // Lost a race on a unique key to another wallet's transaction. The winner has committed, so this finds it.
+        this.metrics.retried("duplicate_race");
+        result = await this.attempt(command, source);
+      }
     } catch (error) {
-      if (!(error instanceof DuplicateOperationError)) throw error;
-      // Lost a race on a unique key to another wallet's transaction. The winner has committed, so this finds it.
-      return this.attempt(command, source);
+      if (error instanceof IdempotencyConflictError) this.metrics.duplicateDetected("idempotency_conflict");
+      else if (error instanceof ExternalIdConflictError)
+        this.metrics.duplicateDetected("external_id_conflict");
+      else if (error instanceof MessageIdConflictError) this.metrics.duplicateDetected("message_id_conflict");
+      timed("error");
+      throw error;
     }
+
+    if (result.idempotentReplay) this.metrics.duplicateDetected("replay");
+    else this.metrics.transactionDecided({ status: result.status, kind: command.kind, source: origin });
+    timed(result.idempotentReplay ? "replay" : "decided");
+    return result;
   }
 
   private async attempt(

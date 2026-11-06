@@ -1,8 +1,16 @@
 import { disclosesBalance } from "../domain/failure-code";
 import { decideSettlement } from "../domain/settlement-policy";
-import { WagerTransactionStatus } from "../domain/wager-transaction";
+import { type WagerTransaction, WagerTransactionStatus } from "../domain/wager-transaction";
 import { TransientFailureError } from "./errors";
-import type { Clock, IdGenerator, PendingReferenceStore, UnitOfWork, WaitingTransaction } from "./ports";
+import {
+  type Clock,
+  type IdGenerator,
+  NO_METRICS,
+  type PendingReferenceStore,
+  type UnitOfWork,
+  type WageringMetrics,
+  type WaitingTransaction,
+} from "./ports";
 import { applyOutcome } from "./settlement-outcome";
 
 export interface SettleWaitingOptions {
@@ -29,9 +37,20 @@ export interface SettleWaitingResult {
   failed: number;
   /** Why each of those failed, for the log. */
   errors: unknown[];
+  /** What each look ended in, for the log: ids and a status, never the amounts. */
+  decisions: Array<Decision & { kind: string }>;
+}
+
+export interface Decision {
+  transactionId: string;
+  walletId: string;
+  providerId: string;
+  status: string;
+  failureCode: string | undefined;
 }
 
 type Outcome = "settled" | "rejected" | "expired" | "waiting" | "skipped";
+type Done = { outcome: Outcome; decision?: Decision & { kind: string } };
 
 /**
  * Settles the transactions that arrived before their reference (FR-40 to FR-43, section 7.1), by running the same
@@ -46,6 +65,7 @@ export class SettleWaitingReferences {
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
     private readonly options: SettleWaitingOptions,
+    private readonly metrics: WageringMetrics = NO_METRICS,
   ) {}
 
   async runOnce(): Promise<SettleWaitingResult> {
@@ -60,11 +80,15 @@ export class SettleWaitingReferences {
       transientFailures: 0,
       failed: 0,
       errors: [],
+      decisions: [],
     };
 
     for (const waiting of claimed) {
       try {
-        result[await this.settleOne(waiting)] += 1;
+        const done = await this.settleOne(waiting);
+        result[done.outcome] += 1;
+        if (done.decision) this.record(result, done.decision);
+        if (done.outcome === "waiting") this.metrics.retried("reference_worker");
       } catch (error) {
         if (error instanceof TransientFailureError) {
           // Nothing was committed. The lease it holds is its retry.
@@ -72,21 +96,31 @@ export class SettleWaitingReferences {
           continue;
         }
         // A constraint or a bug: trying again cannot change the answer, so say so and stop (FR-32).
-        await this.fail(waiting);
+        const failed = await this.fail(waiting);
         result.failed += 1;
         result.errors.push(error);
+        if (failed) this.record(result, failed);
       }
     }
     return result;
   }
 
-  private settleOne(waiting: WaitingTransaction): Promise<Outcome> {
+  private record(result: SettleWaitingResult, decision: Decision & { kind: string }): void {
+    result.decisions.push(decision);
+    this.metrics.transactionDecided({
+      status: decision.status,
+      kind: decision.kind,
+      source: "reference_worker",
+    });
+  }
+
+  private settleOne(waiting: WaitingTransaction): Promise<Done> {
     return this.unitOfWork.run(async (tx) => {
       // The wallet first, as everywhere (ADR-0003). Whatever else touched it has finished by the time this returns.
       const wallet = await tx.wallets.lockById(waiting.walletId);
       const transaction = await tx.transactions.findById(waiting.id);
       if (!wallet || !transaction || transaction.status !== WagerTransactionStatus.PendingReference) {
-        return "skipped";
+        return { outcome: "skipped" };
       }
 
       const reference =
@@ -112,7 +146,7 @@ export class SettleWaitingReferences {
             transaction.id,
             new Date(now.getTime() + this.options.retryDelayMs(waiting.attempts)),
           );
-          return "waiting";
+          return { outcome: "waiting" };
         }
         expired = true;
         decision = {
@@ -131,18 +165,33 @@ export class SettleWaitingReferences {
         "update",
       );
       await tx.outbox.enqueue(events);
-      return expired ? "expired" : decision.outcome === "apply" ? "settled" : "rejected";
+      return {
+        outcome: expired ? "expired" : decision.outcome === "apply" ? "settled" : "rejected",
+        decision: describe(transaction),
+      };
     });
   }
 
   /** If this cannot be recorded either, it throws, and the round ends: the lease it holds is the retry. */
-  private async fail(waiting: WaitingTransaction): Promise<void> {
-    await this.unitOfWork.run(async (tx) => {
+  private async fail(waiting: WaitingTransaction): Promise<(Decision & { kind: string }) | undefined> {
+    return this.unitOfWork.run(async (tx) => {
       await tx.wallets.lockById(waiting.walletId);
       const transaction = await tx.transactions.findById(waiting.id);
-      if (!transaction || transaction.status !== WagerTransactionStatus.PendingReference) return;
+      if (!transaction || transaction.status !== WagerTransactionStatus.PendingReference) return undefined;
       transaction.fail("SETTLEMENT_FAILED");
       await tx.transactions.update(transaction);
+      return describe(transaction);
     });
   }
+}
+
+function describe(transaction: WagerTransaction): Decision & { kind: string } {
+  return {
+    transactionId: transaction.id,
+    walletId: transaction.walletId,
+    providerId: transaction.providerId,
+    status: transaction.status,
+    failureCode: transaction.failureCode,
+    kind: transaction.kind,
+  };
 }

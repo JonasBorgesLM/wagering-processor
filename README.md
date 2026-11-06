@@ -28,7 +28,7 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 - The outbox publisher (`publisher` role): claims due rows with a lease (`FOR UPDATE SKIP LOCKED`, one statement), publishes outside any transaction to `wagering-events.fifo` (group = wallet, deduplication id = `eventId`), then marks the row. Tested with several publishers at once (every event sent once), a publisher that dies after claiming (another takes the rows when the lease ends), a broker that is away (rows back off, none lost, publish when it returns), a crash between publishing and marking (published again under the same `eventId`), and as a real process that drains on `SIGTERM`. **Delivery is at least once:** a consumer of the events must deduplicate on `eventId` and order by `walletVersion`.
 - The pending-reference worker (`reference-worker` role): a `REFUND` or `ROLLBACK` that arrives before its bet waits, with its schedule on the row, and is settled at a later look by running the same settlement order under the wallet lock. After the TTL (1 h by default) it is rejected `REFERENCE_NOT_FOUND` and an event says so. A reversal waiting on another waiting reversal keeps waiting. Tested with 60 waiting reversals across 4 workers (each claimed and settled once) and as a real process. **A waiting reversal is settled at its next look, up to the current backoff after its bet arrives, and a bet that arrives after the reversal expired is applied normally (no tombstone).**
 - Reconciliation (`POST /wallets/:walletId/reconciliation`): compares the stored balance with the ledger, and checks that every entry adds up, is in the wallet's currency and continues the one before. One statement, so it is a single snapshot, and no lock, so a busy wallet is not stalled. A divergence is flagged in the response, logged as an error with the wallet, and counted (`wagering_reconciliations_total{result="divergent"}`); **it is never corrected.** Tested with divergences injected through SQL, with a held wallet lock, and against 80 bets committing during 60 checks.
-- Designed but not implemented: the rest of the metrics and logs, described in [Patterns](ARCHITECTURE.md#patterns).
+- Metrics and correlated logs, described under Observability below. Designed but not implemented: the failure suite and the final documents, described in [Patterns](ARCHITECTURE.md#patterns).
 - Contract tests on what the design relies on: row-lock serialization, the deadlock that fixes the lock order, exact `NUMERIC` strings, reversible migrations, FIFO group hold, deduplication, visibility and DLQ redrive.
 
 **Not verified yet:** draining while a worker is in the middle of a settlement (the process test signals an idle worker). The consumer's, the publisher's and the reference worker's stop paths are tested; stopping waits for the poll in progress, at most `QUEUE_WAIT_SECONDS`.
@@ -132,6 +132,26 @@ Every error looks the same, and the status tells a provider what to do:
 | `413` | Body over the limit | No |
 | `503` | Nothing was changed; try again (`Retry-After: 1`) | **Yes** |
 | `500` | A bug, or a transaction that ended in a failure; the cause is logged, never sent | Report it |
+
+## Observability
+
+Logs are JSON, one line per event, with the fields that tie it together: `correlationId` (the `X-Correlation-Id` the caller sent when it is plain, otherwise generated, and the message id on the queue), `messageId`, `transactionId`, `walletId`, `providerId`, `status`, `failureCode` and `durationMs`. **Only those fields are written**: the logger drops anything else, so an amount, a player, a round, a game or an idempotency key cannot reach a log through a context object. A test submits a payload made of unmistakable values over HTTP and over the queue and searches every log line for them. A refused request is logged with its code and not its message, because the message can carry the key.
+
+`GET /metrics` (Prometheus):
+
+| Metric | Labels | What moves it |
+| --- | --- | --- |
+| `wagering_transactions_total` | `status`, `kind`, `source` (`http`, `sqs`, `reference_worker`) | a decision gave a transaction a status; a replay does not count |
+| `wagering_duplicates_total` | `kind`: `replay`, `idempotency_conflict`, `external_id_conflict`, `message_id_conflict` | a replay answered from the stored result, or a conflict refused |
+| `wagering_retries_total` | `component`: `consumer`, `outbox`, `reference_worker`, `duplicate_race` | work put back to be tried again |
+| `wagering_dlq_messages_total` | `reason`: `permanent`, `attempts-exhausted` | a message copied to the dead-letter queue |
+| `wagering_lock_conflicts_total` | `kind`: `lock_timeout`, `deadlock` | a wallet lock wait that ended in one of them |
+| `wagering_database_transient_failures_total` | `reason` | any database call that failed in a way retrying may fix (includes the lock conflicts) |
+| `wagering_outbox_lag_seconds`, `wagering_outbox_unpublished` | none | measured when scraped: the age of the oldest event not yet published, and how many are waiting |
+| `wagering_settlement_duration_seconds` | `source`, `outcome` (`decided`, `replay`, `error`) | histogram of one settlement, first line of the use case to its return |
+| `wagering_reconciliations_total` | `result` | a reconciliation, consistent or divergent |
+
+No label takes a value from a request (a wallet, a provider, a key), because that would make the number of series unbounded. The counters an alert would watch start at zero, so a rate over one that has not happened yet is 0 and not absent; the `wagering_transactions_total` series appear with their first transaction. **Not provided:** dashboards, tracing, and alert rules; the metrics are the raw material.
 
 ## Documents
 

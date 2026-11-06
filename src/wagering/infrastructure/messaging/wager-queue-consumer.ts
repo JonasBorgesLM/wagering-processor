@@ -10,6 +10,7 @@ import {
 import { type BeforeApplicationShutdown, Logger, type OnApplicationBootstrap } from "@nestjs/common";
 import { QUEUES } from "../../../platform/config/config";
 import { type BackoffPolicy, backoffSeconds } from "../../../platform/resilience/backoff";
+import { NO_METRICS, type WageringMetrics } from "../../application/ports";
 import type { SubmitWagerTransaction } from "../../application/submit-wager-transaction";
 import { classifyFailure } from "./classify-failure";
 import { CONSUMER_NAME, parseWagerMessage } from "./wager-message";
@@ -46,6 +47,7 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
     private readonly useCase: SubmitWagerTransaction,
     private readonly options: ConsumerOptions,
     private readonly drain: { begin(signal?: string): void } = { begin: () => undefined },
+    private readonly metrics: WageringMetrics = NO_METRICS,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -168,10 +170,16 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
     try {
       const { messageId, command } = parseWagerMessage(message.Body);
       const result = await this.useCase.execute(command, { consumerName: CONSUMER_NAME, messageId });
+      // The fields that tie this line to the message, the transaction and the wallet. Never the amount, the player,
+      // the round or the key: those are the payload (SR-01).
       this.logger.log(result.idempotentReplay ? "Message was a replay" : "Message settled", {
+        correlationId: command.correlationId,
         messageId,
         transactionId: result.transactionId,
+        walletId: command.walletId,
+        providerId: command.providerId,
         status: result.status,
+        failureCode: result.failureCode,
       });
     } catch (error) {
       return this.failed(queues, message, error);
@@ -205,6 +213,7 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
     }
 
     const delay = backoffSeconds(receives, this.options.backoff);
+    this.metrics.retried("consumer");
     this.logger.warn(`Message will be retried in ${delay}s`, {
       messageId: message.MessageId,
       error: describe(error),
@@ -257,6 +266,7 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
       });
       return false;
     }
+    this.metrics.deadLettered(kind);
     await this.acknowledge(queues.input, message);
     return true;
   }

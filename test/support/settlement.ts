@@ -12,7 +12,10 @@ import {
 import { Money } from "../../src/wagering/domain/money";
 import { WagerTransactionKind as Kind, WagerTransaction } from "../../src/wagering/domain/wager-transaction";
 import { Wallet } from "../../src/wagering/domain/wallet";
-import { MikroOrmUnitOfWork } from "../../src/wagering/infrastructure/persistence/mikro-orm-unit-of-work";
+import {
+  MikroOrmUnitOfWork,
+  type UnitOfWorkOptions,
+} from "../../src/wagering/infrastructure/persistence/mikro-orm-unit-of-work";
 import { MikroOrmWalletReader } from "../../src/wagering/infrastructure/persistence/mikro-orm-wallet-reader";
 import { wageringEntitySchemas } from "../../src/wagering/infrastructure/persistence/schemas";
 import { SystemClock, UuidV7Generator } from "../../src/wagering/infrastructure/system";
@@ -40,7 +43,7 @@ export class SettlementWorld {
   private constructor(
     readonly orm: MikroORM,
     private readonly database: TestDatabase,
-    readonly options: { lockTimeoutMs: number; statementTimeoutMs: number },
+    readonly options: UnitOfWorkOptions,
   ) {
     this.unitOfWork = new MikroOrmUnitOfWork(orm, this.clock, options);
     this.useCase = new SubmitWagerTransaction(this.unitOfWork, this.clock, this.ids);
@@ -53,7 +56,7 @@ export class SettlementWorld {
   }
 
   static async create(
-    options = { lockTimeoutMs: 2_000, statementTimeoutMs: 5_000 },
+    options: UnitOfWorkOptions = { lockTimeoutMs: 2_000, statementTimeoutMs: 5_000 },
     pool: { max?: number; acquireTimeoutMs?: number } = {},
   ) {
     const database = await createTestDatabase();

@@ -1,4 +1,4 @@
-import type { Clock, EventPublisher, OutboxStore } from "./ports";
+import { type Clock, type EventPublisher, NO_METRICS, type OutboxStore, type WageringMetrics } from "./ports";
 
 export interface PublishOutboxOptions {
   batchSize: number;
@@ -28,6 +28,7 @@ export class PublishOutbox {
     private readonly publisher: EventPublisher,
     private readonly clock: Clock,
     private readonly options: PublishOutboxOptions,
+    private readonly metrics: WageringMetrics = NO_METRICS,
   ) {}
 
   async runOnce(): Promise<PublishOutboxResult> {
@@ -44,6 +45,7 @@ export class PublishOutbox {
         for (const rest of entries.slice(index)) {
           const retryAt = new Date(this.clock.now().getTime() + this.options.retryDelayMs(rest.attempts));
           await this.store.reschedule(rest.id, retryAt);
+          this.metrics.retried("outbox");
         }
         return { claimed: entries.length, published, failure };
       }
