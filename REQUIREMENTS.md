@@ -262,7 +262,11 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 | Same `messageId` with a different hash | DLQ (`INT-17`) |
 | `IDEMPOTENCY_CONFLICT`, `EXTERNAL_ID_CONFLICT`, `WALLET_NOT_FOUND` | DLQ (`INT-17`) |
 
-- **FR-80** On `SIGTERM`: stop polling, finish in-flight work within a deadline, return the visibility of the rest, and fail readiness.
+- **FR-76** The consumer calls the same use case as `POST /wagering/transactions`, and a message is held to the same field rules as the HTTP body (`SR-02`). The message adds `messageId`, `type` and `occurredAt`; an unknown field is refused.
+- **FR-77** The inbox row `(consumerName, messageId)` is written in the transaction that settles the message, before the wallet lock, and rolls back with it. A message that is not settled leaves no inbox row, so its redelivery is not mistaken for a duplicate.
+- **FR-78** A message is acknowledged only after the use case returned, which is after `COMMIT`. A failed acknowledgement is harmless: the redelivery finds the inbox row or the idempotency key and changes nothing.
+- **FR-79** Messages of one wallet are handled in order, and when one is left unacknowledged the rest of its wallet in the same batch are left alone (`NFR-05`: this keeps order, it does not guarantee it).
+- **FR-80** On `SIGTERM`: stop polling, finish in-flight work within a deadline, return the visibility of the rest, and fail readiness. Stopping waits for the poll in progress and does not cancel it: a cancelled long poll is still open at the broker, which gives the next message to a connection nobody reads and hides it for the visibility timeout. Observed on the emulator. A poll is therefore short (`QUEUE_WAIT_SECONDS`, default 5, at most 20), and bounds how long stopping takes.
 - **FR-81** On `SIGTERM`, the publisher and the reference worker stop claiming and finish what they hold. Anything unfinished is safe, because its lease expires and another instance takes it.
 
 ### 3.12 Events (§11)

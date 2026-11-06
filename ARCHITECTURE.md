@@ -141,7 +141,7 @@ interface Clock { now(): Date; }
 interface IdGenerator { next(): string; }       // UUIDv7, time-ordered for index locality
 ```
 
-Each method exists because something calls it. Still to come with their callers: the inbox (#15), updating a stored transaction (#19), and `EventPublisher` (#18).
+Each method exists because something calls it. Still to come with their callers: updating a stored transaction (#19) and `EventPublisher` (#18).
 
 ## Flows
 
@@ -173,7 +173,9 @@ A unique violation in step 6 means a race on the same key from another wallet pa
 
 **The two reads are not one snapshot, and the code asks what a row is, not which read found it.** A twin can commit between the lookup by key and the lookup by the provider's id. The first then misses and the second finds the twin's row, which carries *our* key. The first version read that as "this operation exists under another key" and answered `EXTERNAL_ID_CONFLICT` to a request that was a plain replay: 13 of 600 identical requests, in 8 of 12 rounds of fifty spread over three processes. It never showed up in a single process, and it was found by the check that uses three. A row under our own key is a replay (or a key conflict, if the payload differs) however it was reached; only a row under another key is the id conflict. A test makes a twin commit in exactly that gap.
 
-**Implemented** in `SubmitWagerTransaction`, without the inbox step, which comes with the consumer (#15). `outbox_messages` is written, and nothing publishes it until #18.
+**Implemented** in `SubmitWagerTransaction`, including the inbox step, which runs only when a `MessageSource` is given. `outbox_messages` is written, and nothing publishes it until #18.
+
+**The inbox step and what it is for.** It is the first statement of the locking transaction and references no wallet, so it needs no lock. A second delivery of the same message waits for the first to finish (the primary key is the lock), then finds the row and answers with the stored transaction. Redelivery is mostly already absorbed by the idempotency key, and that fast path runs first; the inbox adds what the key cannot: **a message id reused with other content is detected** (`MESSAGE_ID_CONFLICT`, dead-letter, INT-17), and the challenge's required record that a message was seen. A new message id with a known key is a replay and is not recorded. The row is written together with the effect and rolls back with it, which the tests show by crashing after each write: no row survives, so the redelivery is not taken for a duplicate and acknowledged with nothing done.
 
 ### Lock limits
 
@@ -209,9 +211,17 @@ mark published                             (crash here: duplicate, safe through 
 
 The same claim pattern on `PENDING_REFERENCE` rows with a due `next_retry_at`, then the settlement flow from step 2. Expiry rejects with `REFERENCE_NOT_FOUND` (FR-42).
 
+### Consumer
+
+`WagerQueueConsumer` (`infrastructure/messaging`) long-polls `wager-transactions.fifo`, parses each message with `parseWagerMessage`, which reuses the HTTP field validation (SR-02), and calls `SubmitWagerTransaction.execute(command, { consumerName, messageId })`. The message id is the correlation and causation id of its events. A message is deleted only after `execute` returned, that is after `COMMIT` (FR-78). A batch is handled in order, and a failure blocks the rest of that wallet's messages in the batch (FR-79).
+
+- **Stopping waits for the poll in progress and does not cancel it.** A cancelled long poll stays open at the broker, which delivers the next message to a connection nobody reads and hides it for the visibility timeout (30 s). It was observed on the emulator, and it took messages from the tests that followed, which is how it was found. The alternative, aborting for a fast exit, was rejected for that reason. The cost is that stopping takes up to `QUEUE_WAIT_SECONDS` (default 5, at most 20).
+- **Not done here, on purpose:** a permanent failure is logged as an error and left unacknowledged, so the queue's `maxReceiveCount` (5) is what moves it to the DLQ. Sending it there at once, and backoff with jitter for transient failures, are #16. Returning the visibility of unhandled messages at shutdown, the deadline and the readiness are #17. Until then, messages received but not handled at shutdown come back after the visibility timeout.
+- **A FIFO group is held by an unacknowledged message,** so one failing message delays its wallet's later messages for the visibility timeout (T-10).
+
 ### Consumer classification
 
-Outcomes are in REQUIREMENTS section 3.11. `SIGTERM` stops polling, finishes in-flight messages within `SHUTDOWN_TIMEOUT_MS`, returns visibility for the rest and fails readiness (FR-80). Compose's `stop_grace_period` is longer than that timeout, so Docker does not kill a draining instance.
+Outcomes are in REQUIREMENTS section 3.11. `classifyFailure` is a pure function: transient failures retry; invalid, unknown, conflicting or wallet-less messages are dead-lettered; anything unrecognised retries, because a bug fixed by a deploy should find its messages still in the queue. `SIGTERM` stops polling, finishes in-flight messages within `SHUTDOWN_TIMEOUT_MS`, returns visibility for the rest and fails readiness (FR-80). Compose's `stop_grace_period` is longer than that timeout, so Docker does not kill a draining instance.
 
 ## HTTP API
 
@@ -356,7 +366,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, settlement policy, integration events, payload hash | Done |
 | 2 | Schema: migrations, constraints, triggers, persistence records and mappers | Done |
 | 3 | Settlement use case and HTTP API | Done |
-| 4 | SQS consumer, inbox, DLQ, shutdown | Not started |
+| 4 | SQS consumer, inbox, DLQ, shutdown | Consumer and inbox done (#15); DLQ and backoff (#16) and shutdown (#17) not started |
 | 5 | Outbox and publisher | Not started |
 | 6 | Out-of-order references worker | Not started |
 | 7 | Reconciliation and observability | Not started |

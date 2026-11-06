@@ -34,9 +34,24 @@ export interface TransactionContext {
     /** Append only: the port offers nothing else, and the database refuses anything else (SR-06). */
     append(entry: WalletLedgerEntry): Promise<void>;
   };
+  /** Deduplication of queue messages by `(consumerName, messageId)`, written with the effect it guards (NFR-04). */
+  inbox: {
+    /**
+     * Records the message, or says it was already recorded and with which hash. Waits for a concurrent insert of
+     * the same message to finish, so two deliveries at once cannot both be new.
+     */
+    record(message: InboxMessage): Promise<{ inserted: true } | { inserted: false; payloadHash: string }>;
+  };
   outbox: {
     enqueue(events: ReadonlyArray<IntegrationEvent<object>>): Promise<void>;
   };
+}
+
+export interface InboxMessage {
+  consumerName: string;
+  messageId: string;
+  payloadHash: string;
+  receivedAt: Date;
 }
 
 /** Reads of stored transactions, with no lock. Committed state only. */

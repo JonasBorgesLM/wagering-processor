@@ -168,6 +168,32 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
           await em.insert(LedgerEntrySchema, ledgerEntryToRecord(entry));
         },
       },
+      inbox: {
+        async record(message) {
+          const connection = em.getConnection();
+          const inserted = (await connection.execute(
+            "insert into inbox_messages (consumer_name, message_id, payload_hash, received_at, processed_at) values (?, ?, ?, ?, ?) on conflict do nothing returning message_id",
+            [
+              message.consumerName,
+              message.messageId,
+              message.payloadHash,
+              message.receivedAt,
+              message.receivedAt,
+            ],
+            "all",
+            em.getTransactionContext(),
+          )) as unknown[];
+          if (inserted.length > 0) return { inserted: true };
+          const [row] = (await connection.execute(
+            "select payload_hash from inbox_messages where consumer_name = ? and message_id = ?",
+            [message.consumerName, message.messageId],
+            "all",
+            em.getTransactionContext(),
+          )) as Array<{ payload_hash: string }>;
+          if (!row) throw new Error("inbox row vanished after a conflict");
+          return { inserted: false, payloadHash: row.payload_hash };
+        },
+      },
       outbox: {
         async enqueue(events) {
           for (const event of events) {

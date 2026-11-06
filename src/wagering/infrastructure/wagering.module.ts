@@ -1,3 +1,4 @@
+import { SQSClient } from "@aws-sdk/client-sqs";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { type DynamicModule, Module } from "@nestjs/common";
 import type { AppConfig } from "../../platform/config/config";
@@ -9,6 +10,7 @@ import { QueryWallets } from "../application/query-wallets";
 import { SubmitWagerTransaction } from "../application/submit-wager-transaction";
 import { TransactionsController } from "./http/transactions.controller";
 import { WalletsController } from "./http/wallets.controller";
+import { WagerQueueConsumer } from "./messaging/wager-queue-consumer";
 import { MikroOrmTransactionReader } from "./persistence/mikro-orm-transaction-reader";
 import { MikroOrmUnitOfWork } from "./persistence/mikro-orm-unit-of-work";
 import { MikroOrmWalletReader } from "./persistence/mikro-orm-wallet-reader";
@@ -27,7 +29,7 @@ export const BUSINESS_CONTROLLERS = [WalletsController, TransactionsController];
 @Module({})
 export class WageringModule {
   /** `api` decides whether this process serves HTTP at all: a process running only the publisher has no routes (ADR-0001). */
-  static register(options: { api: boolean }): DynamicModule {
+  static register(options: { api: boolean; consumer: boolean }): DynamicModule {
     const limits = (config: AppConfig) => ({
       lockTimeoutMs: config.lockTimeoutMs,
       statementTimeoutMs: config.statementTimeoutMs,
@@ -75,6 +77,16 @@ export class WageringModule {
           useFactory: (uow: UnitOfWork, clock: Clock, ids: IdGenerator) =>
             new SubmitWagerTransaction(uow, clock, ids),
         },
+        ...(options.consumer
+          ? [
+              {
+                provide: WagerQueueConsumer,
+                inject: [SQSClient, SubmitWagerTransaction, APP_CONFIG],
+                useFactory: (sqs: SQSClient, useCase: SubmitWagerTransaction, config: AppConfig) =>
+                  new WagerQueueConsumer(sqs, useCase, config.queueWaitSeconds),
+              },
+            ]
+          : []),
       ],
       controllers: options.api ? BUSINESS_CONTROLLERS : [],
       exports: [OpenWallet, QueryWallets, UNIT_OF_WORK, CLOCK, ID_GENERATOR],

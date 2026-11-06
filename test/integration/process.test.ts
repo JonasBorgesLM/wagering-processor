@@ -10,7 +10,9 @@ const running: Bun.Subprocess[] = [];
 function start(overrides: Record<string, string> = {}) {
   const port = 20000 + Math.floor(Math.random() * 20000);
   const child = Bun.spawn(["bun", "run", "src/main.ts"], {
-    env: { ...process.env, ...TEST_ENV, PORT: String(port), ...overrides },
+    // Only the api role by default. A process killed while its consumer long-polls leaves that poll open at the
+    // broker, which hands the next message to nobody and hides it: it would take the messages of the tests after it.
+    env: { ...process.env, ...TEST_ENV, PORT: String(port), APP_ROLES: "api", ...overrides },
     stdout: "pipe",
     stderr: "pipe",
   });
