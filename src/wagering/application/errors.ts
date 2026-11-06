@@ -54,6 +54,11 @@ export class IdempotencyConflictError extends ApplicationError {
 }
 
 /** The same provider operation under another key (FR-54). */
+/** One message id arrived twice with different content: a broker or provider bug, never a retry (INT-17). */
+export class MessageIdConflictError extends ApplicationError {
+  readonly code = "MESSAGE_ID_CONFLICT";
+}
+
 export class ExternalIdConflictError extends ApplicationError {
   readonly code = "EXTERNAL_ID_CONFLICT";
   override readonly name = "ExternalIdConflictError";

@@ -19,6 +19,7 @@ import {
   DuplicateOperationError,
   ExternalIdConflictError,
   IdempotencyConflictError,
+  MessageIdConflictError,
   WalletNotFoundError,
 } from "./errors";
 import { payloadHash } from "./payload-hash";
@@ -37,6 +38,12 @@ export interface SubmitWagerTransactionCommand {
   referenceExternalTransactionId?: string | undefined;
   correlationId: string;
   causationId?: string | undefined;
+}
+
+/** Where a command came from when it arrived on a queue, so the message is recorded with its effect. */
+export interface MessageSource {
+  consumerName: string;
+  messageId: string;
 }
 
 export interface SubmissionResult {
@@ -61,17 +68,20 @@ export class SubmitWagerTransaction {
     private readonly ids: IdGenerator,
   ) {}
 
-  async execute(command: SubmitWagerTransactionCommand): Promise<SubmissionResult> {
+  async execute(command: SubmitWagerTransactionCommand, source?: MessageSource): Promise<SubmissionResult> {
     try {
-      return await this.attempt(command);
+      return await this.attempt(command, source);
     } catch (error) {
       if (!(error instanceof DuplicateOperationError)) throw error;
       // Lost a race on a unique key to another wallet's transaction. The winner has committed, so this finds it.
-      return this.attempt(command);
+      return this.attempt(command, source);
     }
   }
 
-  private async attempt(command: SubmitWagerTransactionCommand): Promise<SubmissionResult> {
+  private async attempt(
+    command: SubmitWagerTransactionCommand,
+    source: MessageSource | undefined,
+  ): Promise<SubmissionResult> {
     const transaction = WagerTransaction.create({
       id: this.ids.next(),
       providerId: command.providerId,
@@ -93,6 +103,11 @@ export class SubmitWagerTransaction {
     if (replay) return replay;
 
     return this.unitOfWork.run(async (tx) => {
+      if (source) {
+        const earlier = await this.recordMessage(tx, source, transaction);
+        if (earlier) return earlier;
+      }
+
       // The lock comes before any insert referencing the wallet. An insert holds FOR KEY SHARE on it through the
       // foreign key, so two transactions inserting first and locking second would deadlock (ADR-0003).
       const wallet = await tx.wallets.lockById(command.walletId);
@@ -105,6 +120,31 @@ export class SubmitWagerTransaction {
       await this.settle(tx, transaction, wallet, command);
       return resultOf(transaction, false);
     });
+  }
+
+  /**
+   * First step of a queue delivery, inside the transaction that settles it, so the message is recorded exactly
+   * when its effect is and a rollback takes both. It needs no wallet lock: it references no wallet.
+   * Returns the answer when this message was already processed.
+   */
+  private async recordMessage(
+    tx: TransactionContext,
+    source: MessageSource,
+    transaction: WagerTransaction,
+  ): Promise<SubmissionResult | undefined> {
+    const seen = await tx.inbox.record({
+      ...source,
+      payloadHash: transaction.payloadHash,
+      receivedAt: this.clock.now(),
+    });
+    if (seen.inserted) return undefined;
+    if (seen.payloadHash !== transaction.payloadHash) {
+      throw new MessageIdConflictError(`message ${source.messageId} was seen before with different content`);
+    }
+    const known = await this.answerIfKnown(tx, transaction);
+    // The inbox row and the transaction commit together, so a recorded message always has its transaction.
+    if (!known) throw new Error(`message ${source.messageId} is recorded but has no transaction`);
+    return known;
   }
 
   /**

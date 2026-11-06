@@ -204,6 +204,7 @@ export function instrumented(
           wallets: wrap("wallets", tx.wallets),
           transactions: wrap("transactions", tx.transactions),
           ledger: wrap("ledger", tx.ledger),
+          inbox: wrap("inbox", tx.inbox),
           outbox: wrap("outbox", tx.outbox),
         }),
       ),
