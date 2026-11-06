@@ -70,12 +70,22 @@ const bodyOf = (op: Operation) => ({
     : {}),
 });
 
-const submit = (proc: ClusterProcess, op: Operation): Promise<Reply> =>
-  call(`${proc.url}/wagering/transactions`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "idempotency-key": op.idempotencyKey },
-    body: JSON.stringify(bodyOf(op)),
-  });
+/**
+ * Sends the operation the way a provider must: a `503` means nothing was changed and the same request may be sent
+ * again, so it is, with the same key. A busy machine answers some of ninety requests that way, and that is the
+ * contract working, not a failure of the scenario. Anything else is returned as it came.
+ */
+async function submit(proc: ClusterProcess, op: Operation): Promise<Reply> {
+  for (let attempt = 0; ; attempt++) {
+    const reply = await call(`${proc.url}/wagering/transactions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": op.idempotencyKey },
+      body: JSON.stringify(bodyOf(op)),
+    });
+    if (reply.status !== 503 || attempt >= 40) return reply;
+    await Bun.sleep(250);
+  }
+}
 
 /** The queue form of the same operation: the message carries the same fields and the key. */
 const queueMessage = (wallet: Wallet, op: Operation, messageId = `msg-${randomUUID()}`) =>
@@ -495,59 +505,70 @@ describe("8. every process killed, then restarted", () => {
 
     // The stuck wallets' locks are held, so their requests are in a transaction, waiting, when the processes die.
     const releases = await Promise.all(stuck.map((wallet) => world.holdLock(wallet.walletId)));
-    const inFlight = requests.map((op, i) => submit(roundRobin(first, i), op).catch(() => undefined));
-    void inFlight;
+    let released = false;
+    const releaseAll = async () => {
+      if (released) return;
+      released = true;
+      await Promise.all(releases.map((release) => release()));
+    };
+    try {
+      const inFlight = requests.map((op, i) => submit(roundRobin(first, i), op).catch(() => undefined));
+      void inFlight;
 
-    await eventually(
-      async () => {
-        const done = await world.sql(
-          "select count(*)::int as n from wager_transactions where wallet_id = any(?::uuid[]) and kind <> 'OPENING'",
-          [`{${free.map((wallet) => wallet.walletId).join(",")}}`],
-        );
-        const waiting = await world.sql(
-          "select count(*)::int as n from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()",
-        );
-        return done[0]?.n === free.length * 3 && waiting[0]?.n >= stuck.length;
-      },
-      "the free wallets to finish and the stuck ones to be waiting on their locks",
-      60_000,
-    );
+      await eventually(
+        async () => {
+          const done = await world.sql(
+            "select count(*)::int as n from wager_transactions where wallet_id = any(?::uuid[]) and kind <> 'OPENING'",
+            [`{${free.map((wallet) => wallet.walletId).join(",")}}`],
+          );
+          const waiting = await world.sql(
+            "select count(*)::int as n from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()",
+          );
+          return done[0]?.n === free.length * 3 && waiting[0]?.n >= stuck.length;
+        },
+        "the free wallets to finish and the stuck ones to be waiting on their locks",
+        60_000,
+      );
 
-    await Promise.all(first.map((proc) => proc.kill("SIGKILL")));
-    await Promise.all(releases.map((release) => release()));
+      await Promise.all(first.map((proc) => proc.kill("SIGKILL")));
+      await releaseAll();
 
-    // The kill really lost work: nothing of the stuck wallets was committed, and everything else was.
-    for (const wallet of stuck) expect((await world.counts(wallet.walletId)).transactions).toBe(0);
-    for (const wallet of free) expect((await world.counts(wallet.walletId)).transactions).toBe(3);
+      // The kill really lost work: nothing of the stuck wallets was committed, and everything else was.
+      for (const wallet of stuck) expect((await world.counts(wallet.walletId)).transactions).toBe(0);
+      for (const wallet of free) expect((await world.counts(wallet.walletId)).transactions).toBe(3);
 
-    // New processes; every request is sent again with the same key.
-    const second = await Promise.all(Array.from({ length: 3 }, () => cluster.start(roles)));
-    const replies = await Promise.all(requests.map((op, i) => submit(roundRobin(second, i), op)));
-    expect(replies.every((reply) => reply.status === 200)).toBe(true);
+      // New processes; every request is sent again with the same key.
+      const second = await Promise.all(Array.from({ length: 3 }, () => cluster.start(roles)));
+      const replies = await Promise.all(requests.map((op, i) => submit(roundRobin(second, i), op)));
+      expect(replies.every((reply) => reply.status === 200)).toBe(true);
 
-    for (const wallet of wallets) {
-      expect(await world.walletState(wallet.walletId)).toEqual({ balance: "70.00", version: 4 });
-      expect((await world.counts(wallet.walletId)).transactions).toBe(3);
+      for (const wallet of wallets) {
+        expect(await world.walletState(wallet.walletId)).toEqual({ balance: "70.00", version: 4 });
+        expect((await world.counts(wallet.walletId)).transactions).toBe(3);
+      }
+      await expectBooksBalance(wallets);
+
+      // Reconciliation, as an operator would run it, agrees on every wallet.
+      for (const [index, wallet] of wallets.entries()) {
+        const report = await (
+          await call(`${roundRobin(second, index).url}/wallets/${wallet.walletId}/reconciliation`, {
+            method: "POST",
+          })
+        ).json();
+        expect(report.consistent).toBe(true);
+      }
+
+      // Events the dead processes committed and never published are published by the new ones.
+      await eventually(allPublished, "the restarted publishers to catch up", 60_000);
+      const ids = (
+        await world.sql("select id from outbox_messages where aggregate_id = any(?::uuid[])", [
+          `{${wallets.map((wallet) => wallet.walletId).join(",")}}`,
+        ])
+      ).map((row) => row.id as string);
+      expect(new Set(await eventsOf(wallets))).toEqual(new Set(ids));
+    } finally {
+      // Held locks would hold the pool open, and the database with it, if the test failed before here.
+      await releaseAll();
     }
-    await expectBooksBalance(wallets);
-
-    // Reconciliation, as an operator would run it, agrees on every wallet.
-    for (const [index, wallet] of wallets.entries()) {
-      const report = await (
-        await call(`${roundRobin(second, index).url}/wallets/${wallet.walletId}/reconciliation`, {
-          method: "POST",
-        })
-      ).json();
-      expect(report.consistent).toBe(true);
-    }
-
-    // Events the dead processes committed and never published are published by the new ones.
-    await eventually(allPublished, "the restarted publishers to catch up", 60_000);
-    const ids = (
-      await world.sql("select id from outbox_messages where aggregate_id = any(?::uuid[])", [
-        `{${wallets.map((wallet) => wallet.walletId).join(",")}}`,
-      ])
-    ).map((row) => row.id as string);
-    expect(new Set(await eventsOf(wallets))).toEqual(new Set(ids));
   });
 });
