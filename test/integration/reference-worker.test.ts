@@ -11,6 +11,7 @@ import { eventually } from "../support/consumer-harness";
 import { TEST_ENV } from "../support/env";
 import { brl, command, instrumented, SettlementWorld } from "../support/settlement";
 
+// Requirements: FR-40 to FR-48.
 // Out-of-order references (FR-40 to FR-43, section 7.1), on a real database with real parallel workers.
 
 setDefaultTimeout(30_000);

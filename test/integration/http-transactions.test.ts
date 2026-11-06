@@ -7,6 +7,7 @@ import { type RunningApp, startApp } from "../support/app";
 import { call } from "../support/http";
 import { brl, SettlementWorld } from "../support/settlement";
 
+// Requirements: FR-63 to FR-65, FR-68, FR-69, FR-75.
 // POST /wagering/transactions end to end: the whole application, a real database, and real parallelism.
 
 let world: SettlementWorld;

@@ -13,6 +13,8 @@ import {
 } from "@aws-sdk/client-sqs";
 import { TEST_ENV } from "../support/env";
 
+// Requirements: IR-01, IR-02.
+
 // Broker semantics the consumer design relies on. An emulator can differ from
 // AWS here, and every line of consumer logic would silently depend on the difference.
 

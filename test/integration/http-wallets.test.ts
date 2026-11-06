@@ -6,6 +6,8 @@ import { startApp } from "../support/app";
 import { call } from "../support/http";
 import { brl, command, SettlementWorld } from "../support/settlement";
 
+// Requirements: FR-66 (roles), FR-67 (reads take no lock).
+
 // The whole application as main builds it, on a real database, called over HTTP.
 
 let world: SettlementWorld;
@@ -422,6 +424,28 @@ describe("a database that cannot be reached is 503 (NFR-11)", () => {
   test("the response says nothing about the host or the driver", async () => {
     const text = await (await call(`${brokenUrl}/wallets/${randomUUID()}`)).text();
     expect(text).not.toMatch(/ECONNREFUSED|localhost|5432|:1\b|postgres/i);
+  });
+});
+
+describe("reads take no lock (FR-67)", () => {
+  test("a wallet, its ledger and a transaction are read at once while the wallet's lock is held", async () => {
+    const wallet = await world.openWallet("100.00");
+    const bet = await world.useCase.execute(command(wallet, { money: brl("10.00") }));
+    const release = await world.holdLock(wallet.walletId);
+    try {
+      const started = performance.now();
+      const [one, ledger, transaction] = await Promise.all([
+        call(`${base}/wallets/${wallet.walletId}`),
+        call(`${base}/wallets/${wallet.walletId}/ledger`),
+        call(`${base}/wagering/transactions/${bet.transactionId}`),
+      ]);
+      expect([one.status, ledger.status, transaction.status]).toEqual([200, 200, 200]);
+      expect((await one.json()).balance.amount).toBe("90.00");
+      // The lock timeout is 2 s: a read that waited for the lock would take that long or fail.
+      expect(performance.now() - started).toBeLessThan(1_000);
+    } finally {
+      await release();
+    }
   });
 });
 

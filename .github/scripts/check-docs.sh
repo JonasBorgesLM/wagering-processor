@@ -89,6 +89,32 @@ else
   skip "no requirements file configured"
 fi
 
+# --- 2b. Every requirement is cited by something that implements or tests it
+#
+# A requirement nobody cites is one nobody can find the test of. A citation shows where to look, not that the test
+# would fail without the protection: that is what the negative controls in the pull requests are for. A range is
+# written "FR-40 to FR-48" and counts for every id in it.
+if [ -n "$REQUIREMENTS_FILE" ] && [ -f "$REQUIREMENTS_FILE" ]; then
+  code_citations=$(grep -rhoE "(^|[^/[:alnum:]])($ID_PREFIXES)-[0-9]{2}( to ($ID_PREFIXES)-[0-9]{2})?" \
+                     --include='*.ts' --include='*.sh' --include='*.yml' --include='*.cjs' \
+                     --exclude=check-docs.sh --exclude-dir=node_modules \
+                     src test scripts migrations .github commitlint.config.cjs 2>/dev/null \
+                   | sed -E 's/^[^A-Z]//' \
+                   | awk '{ if (match($0, /(NFR|FR|SR|IR)-[0-9][0-9]/)) {
+                              prefix = substr($0, RSTART, RLENGTH - 3); from = substr($0, RSTART + RLENGTH - 2) + 0;
+                              printf "%s-%02d\n", prefix, from;
+                              if ($0 ~ / to /) { split($0, parts, " to "); to = substr(parts[2], length(parts[2]) - 1) + 0;
+                                for (i = from + 1; i <= to; i++) printf "%s-%02d\n", prefix, i } } }' | sort -u)
+  uncited=""
+  for id in $defined; do printf '%s\n' "$code_citations" | grep -qx "$id" || uncited="$uncited $id"; done
+  if [ -n "$uncited" ]; then
+    fail "requirements that no test, source file or script cites:$uncited"
+    note "Cite the id in the test that guards it (a header comment is enough), or in the code that implements it."
+  else
+    pass "every requirement is cited by a test, a source file or a script"
+  fi
+fi
+
 # --- 3. Every cited threat id resolves -------------------------------------
 if [ -n "$THREAT_MODEL_FILE" ] && [ -f "$THREAT_MODEL_FILE" ]; then
   threats=$(grep -oE '^### T-[0-9]{2}' "$THREAT_MODEL_FILE" | awk '{print $2}' | sort -u)

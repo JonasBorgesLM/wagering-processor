@@ -19,6 +19,8 @@ import {
 import { Wallet } from "../../../src/wagering/domain/wallet";
 import { brl, stored, T0, transaction, walletWith } from "../../support/domain-fixtures";
 
+// Requirements: FR-92 (an event is built only from the state it describes), FR-93 (the wallet is the aggregate), FR-94 (the version-1 format is pinned by its expected JSON).
+
 const OCCURRED = new Date("2026-11-05T12:00:00.000Z");
 const PROCESSED_AT = new Date("2026-11-05T13:00:00.000Z");
 

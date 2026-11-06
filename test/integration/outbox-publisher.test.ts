@@ -27,6 +27,7 @@ import { command, SettlementWorld } from "../support/settlement";
 // Reading the queue to its end takes two one-second polls, so a test that reads twice outlasts the default.
 setDefaultTimeout(30_000);
 
+// Requirements: FR-90, FR-91, FR-95, FR-96, IR-03.
 // Real PostgreSQL and the real events queue (FR-90, FR-91, ADR-0007, section 11).
 
 let world: SettlementWorld;

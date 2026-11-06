@@ -5,6 +5,7 @@ import { type RunningApp, startApp } from "../support/app";
 import { call, type Reply } from "../support/http";
 import { brl, command, SettlementWorld } from "../support/settlement";
 
+// Requirements: FR-70 to FR-72, FR-97 to FR-99.
 // Reconciliation over the real HTTP stack and a real database (FR-70 to FR-72). Divergences are injected through
 // SQL, because that is the only way a wallet could ever come to disagree with its ledger.
 

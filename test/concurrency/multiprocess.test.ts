@@ -20,6 +20,7 @@ import {
 import { call, type Reply } from "../support/http";
 import { brl, command, SettlementWorld } from "../support/settlement";
 
+// Requirements: NFR-03, NFR-07, FR-29, FR-40, FR-80, FR-81, FR-90, FR-95; challenge section 13.
 // The mandatory concurrency scenarios of section 13, with real processes: several applications sharing one database
 // and one broker, killed and restarted. In-process tests cannot show a kill, a restart or a second instance taking
 // over, which is what these are for.
