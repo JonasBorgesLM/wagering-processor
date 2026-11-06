@@ -3,6 +3,7 @@ import type { AppConfig } from "./platform/config/config";
 import { ConfigModule } from "./platform/config/config.module";
 import { DatabaseModule } from "./platform/database/database.module";
 import { HealthModule } from "./platform/health/health.module";
+import { LifecycleModule } from "./platform/lifecycle/drain-state";
 import { SqsModule } from "./platform/messaging/sqs.module";
 import { MetricsModule } from "./platform/metrics/metrics.module";
 import { wageringEntitySchemas } from "./wagering/infrastructure/persistence/schemas";
@@ -17,6 +18,7 @@ export class AppModule {
       imports: [
         ConfigModule.forRoot(config),
         DatabaseModule.forRoot(wageringEntitySchemas),
+        LifecycleModule,
         SqsModule,
         MetricsModule,
         HealthModule,

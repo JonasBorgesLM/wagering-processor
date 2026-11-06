@@ -1,30 +1,10 @@
 import { GetQueueUrlCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { MikroORM } from "@mikro-orm/postgresql";
-import {
-  type BeforeApplicationShutdown,
-  Controller,
-  Get,
-  Inject,
-  Injectable,
-  Logger,
-  Module,
-  ServiceUnavailableException,
-} from "@nestjs/common";
+import { Controller, Get, Inject, Module, ServiceUnavailableException } from "@nestjs/common";
 import { QUEUES } from "../config/config";
+import { DrainState } from "../lifecycle/drain-state";
 
 const PROBE_TIMEOUT_MS = 2_000;
-
-/** Flips before connections close, so a load balancer stops routing here while in-flight work finishes (FR-80). */
-@Injectable()
-class DrainState implements BeforeApplicationShutdown {
-  draining = false;
-  private readonly logger = new Logger(DrainState.name);
-
-  beforeApplicationShutdown(signal?: string): void {
-    this.draining = true;
-    this.logger.log(`Draining after ${signal ?? "shutdown request"}`);
-  }
-}
 
 @Controller("health")
 class HealthController {
@@ -69,5 +49,5 @@ async function probe(check: () => Promise<unknown>): Promise<"up" | "down"> {
   }
 }
 
-@Module({ controllers: [HealthController], providers: [DrainState] })
+@Module({ controllers: [HealthController] })
 export class HealthModule {}

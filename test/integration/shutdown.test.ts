@@ -1,0 +1,160 @@
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { WagerQueueConsumer } from "../../src/wagering/infrastructure/messaging/wager-queue-consumer";
+import {
+  depth,
+  eventually,
+  FAST,
+  message,
+  purge,
+  queueIsEmpty,
+  send,
+  setUpQueues,
+  spyOnUseCase,
+  sqs,
+  started,
+} from "../support/consumer-harness";
+import { TEST_ENV } from "../support/env";
+import { SettlementWorld } from "../support/settlement";
+
+// SIGTERM with messages in flight (FR-80), on the real entry point as a separate process, against the real broker
+// and a real lock held by the test, which is what keeps a message "in flight" for as long as the test wants.
+
+let world: SettlementWorld;
+const running: Bun.Subprocess[] = [];
+
+beforeAll(async () => {
+  await setUpQueues();
+  world = await SettlementWorld.create();
+});
+afterAll(async () => {
+  await purge();
+  sqs.destroy();
+  await world.destroy();
+});
+beforeEach(purge);
+afterEach(async () => {
+  for (const child of running.splice(0)) {
+    child.kill("SIGKILL");
+    await child.exited;
+  }
+  // A killed consumer may leave a long poll open at the broker for one more wait.
+  await Bun.sleep(1_200);
+  await purge();
+});
+
+function startProcess(shutdownTimeoutMs: number) {
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  const child = Bun.spawn(["bun", "run", "src/main.ts"], {
+    env: {
+      ...process.env,
+      ...TEST_ENV,
+      DATABASE_URL: world.databaseUrl(),
+      PORT: String(port),
+      APP_ROLES: "api,consumer",
+      QUEUE_WAIT_SECONDS: "1",
+      // Long enough that a held lock is waited on for the whole test and not given up as a transient failure.
+      LOCK_TIMEOUT_MS: "60000",
+      STATEMENT_TIMEOUT_MS: "60000",
+      SHUTDOWN_TIMEOUT_MS: String(shutdownTimeoutMs),
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  running.push(child);
+  return { child, base: `http://localhost:${port}` };
+}
+
+async function waitForLive(base: string): Promise<void> {
+  await eventually(
+    async () => (await fetch(`${base}/health/live`).catch(() => undefined))?.ok === true,
+    "the process to be live",
+    15_000,
+  );
+}
+
+/** Three wallets, a message for each, and the first wallet locked: so the first message cannot finish. */
+async function threeMessagesFirstStuck() {
+  const wallets = [
+    await world.openWallet("100.00"),
+    await world.openWallet("100.00"),
+    await world.openWallet("100.00"),
+  ];
+  const release = await world.holdLock(wallets[0]?.walletId as string);
+  for (const wallet of wallets) await send(message(wallet), wallet.walletId);
+  return { wallets, release };
+}
+
+describe("SIGTERM with a message in flight (FR-80)", () => {
+  test("the message finishes and is acknowledged, readiness fails meanwhile, and the rest are given back", async () => {
+    const { wallets, release } = await threeMessagesFirstStuck();
+    const { child, base } = startProcess(20_000);
+    await waitForLive(base);
+    // All three received in one batch: the first is being settled, waiting on the lock, and two have not started.
+    await eventually(async () => (await depth()).inFlight === 3, "the batch to be received");
+
+    child.kill("SIGTERM");
+
+    // Still running, since its message cannot finish, and no longer ready.
+    await eventually(
+      async () => {
+        const ready = await fetch(`${base}/health/ready`).catch(() => undefined);
+        return ready?.status === 503 && ((await ready.json()) as { draining?: boolean }).draining === true;
+      },
+      "readiness to report draining",
+      5_000,
+    );
+    expect(child.exitCode).toBeNull();
+    expect((await depth()).inFlight).toBe(3);
+
+    await release();
+    expect(await child.exited).toBe(143);
+
+    const output = await new Response(child.stdout as ReadableStream).text();
+    expect(output).toContain("Draining");
+    expect(output).toContain("Returned 2 unstarted message(s) to the queue");
+    expect(output).not.toContain("Shutdown deadline exceeded");
+
+    // The one in flight was finished and acknowledged; the two that had not started are visible again at once and
+    // untouched, and not hidden for the 30 s visibility timeout.
+    expect(await depth()).toEqual({ visible: 2, inFlight: 0 });
+    expect(await world.walletState(wallets[0]?.walletId as string)).toEqual({ balance: "20.00", version: 2 });
+    for (const wallet of wallets.slice(1)) {
+      expect(await world.walletState(wallet.walletId)).toEqual({ balance: "100.00", version: 1 });
+    }
+  }, 60_000);
+
+  test("past the deadline it exits, and the unacknowledged work comes back by itself", async () => {
+    const { wallets, release } = await threeMessagesFirstStuck();
+    const { child, base } = startProcess(2_000);
+    await waitForLive(base);
+    await eventually(async () => (await depth()).inFlight === 3, "the batch to be received");
+
+    const signalled = performance.now();
+    child.kill("SIGTERM");
+    // The lock is never released, so the message in flight cannot finish: the deadline decides.
+    expect(await child.exited).toBe(1);
+    expect(performance.now() - signalled).toBeLessThan(6_000);
+    expect(await new Response(child.stdout as ReadableStream).text()).toContain("Shutdown deadline exceeded");
+
+    // Nothing was lost, nothing applied, and nothing deleted: all three are still held by the broker.
+    expect((await depth()).inFlight).toBe(3);
+    await release();
+    expect(await world.counts(wallets[0]?.walletId as string)).toEqual({
+      transactions: 0,
+      entries: 0,
+      events: 0,
+    });
+
+    // The visibility timeout (30 s) gives them back, and another worker settles each exactly once.
+    const worker = started(new WagerQueueConsumer(sqs, spyOnUseCase(world).useCase, FAST));
+    try {
+      await eventually(queueIsEmpty, "the work to come back and be settled", 50_000);
+      for (const wallet of wallets) {
+        expect(await world.walletState(wallet.walletId)).toEqual({ balance: "20.00", version: 2 });
+        expect(await world.counts(wallet.walletId)).toEqual({ transactions: 1, entries: 1, events: 2 });
+      }
+    } finally {
+      await worker.beforeApplicationShutdown();
+    }
+  }, 90_000);
+});
