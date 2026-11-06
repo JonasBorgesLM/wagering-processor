@@ -168,3 +168,53 @@ export interface ReconciliationReport {
 export interface DivergenceReporter {
   checked(report: ReconciliationReport): void;
 }
+
+export type DuplicateKind =
+  | "replay"
+  | "idempotency_conflict"
+  | "external_id_conflict"
+  | "message_id_conflict";
+export type RetryComponent = "consumer" | "outbox" | "reference_worker" | "duplicate_race";
+export type DeadLetterReason = "permanent" | "attempts-exhausted";
+export type TransientReason =
+  | "lock_timeout"
+  | "deadlock"
+  | "serialization_failure"
+  | "statement_timeout"
+  | "pool_timeout"
+  | "connection"
+  | "other";
+
+/**
+ * What the system counts (NFR-06). Every method is a fact that already happened and returns nothing: a metric never
+ * decides anything, and one that fails must not fail what it measures. Labels are a closed set on purpose: a value
+ * from a request (a wallet, a provider, a key) would make the series unbounded.
+ */
+export interface WageringMetrics {
+  /** A transaction reached a status by a decision: a first arrival or a worker's look. Replays are not decisions. */
+  transactionDecided(event: {
+    status: string;
+    kind: string;
+    source: "http" | "sqs" | "reference_worker";
+  }): void;
+  duplicateDetected(kind: DuplicateKind): void;
+  retried(component: RetryComponent): void;
+  deadLettered(reason: DeadLetterReason): void;
+  /** A database call failed in a way trying again may fix. Lock timeouts and deadlocks are the lock conflicts. */
+  databaseTransient(reason: TransientReason): void;
+  /** How long one settlement took, from the use case's first line to its return or throw. */
+  settlementTimed(event: {
+    source: "http" | "sqs";
+    outcome: "decided" | "replay" | "error";
+    seconds: number;
+  }): void;
+}
+
+export const NO_METRICS: WageringMetrics = {
+  transactionDecided: () => undefined,
+  duplicateDetected: () => undefined,
+  retried: () => undefined,
+  deadLettered: () => undefined,
+  databaseTransient: () => undefined,
+  settlementTimed: () => undefined,
+};

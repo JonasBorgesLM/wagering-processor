@@ -158,6 +158,14 @@ function respond(
     const fields = { correlationId: request.correlationId, status: problem.status, error: cause };
     if (problem.status === 503) logger.warn("Request failed", fields);
     else logger.error("Request failed", fields);
+  } else {
+    // A refusal is the caller's mistake and not ours, so it is information and not a warning. Only the code is
+    // logged: the message can carry the key or the ids the caller sent (SR-01), and the code says what happened.
+    logger.log("Request refused", {
+      correlationId: request.correlationId,
+      status: problem.status,
+      error: problem.body.error.code,
+    });
   }
   if (response.headersSent) return;
   for (const [name, value] of Object.entries(problem.headers)) response.setHeader(name, value);

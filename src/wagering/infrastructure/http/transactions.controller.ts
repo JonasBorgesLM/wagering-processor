@@ -1,5 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { Body, Controller, Get, Headers, Inject, Param, Post, Req, Res, UseGuards } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Inject,
+  Logger,
+  Param,
+  Post,
+  Req,
+  Res,
+  UseGuards,
+} from "@nestjs/common";
 import { QueryTransactions } from "../../application/query-transactions";
 import { SubmitWagerTransaction } from "../../application/submit-wager-transaction";
 import type { CorrelatedRequest } from "./correlation";
@@ -15,6 +27,8 @@ interface StatusSetter {
 @UseGuards(ProviderAuthGuard)
 @Controller()
 export class TransactionsController {
+  private readonly logger = new Logger(TransactionsController.name);
+
   constructor(
     @Inject(SubmitWagerTransaction) private readonly submit: SubmitWagerTransaction,
     @Inject(QueryTransactions) private readonly queries: QueryTransactions,
@@ -28,11 +42,24 @@ export class TransactionsController {
     @Res({ passthrough: true }) response: StatusSetter,
   ) {
     const parsed = parseSubmitTransaction(headers, body);
+    const correlationId = request.correlationId ?? randomUUID();
+    const started = performance.now();
     const result = await this.submit.execute({
       ...parsed,
-      correlationId: request.correlationId ?? randomUUID(),
+      correlationId,
       // What directly caused the events: this request, identified by the key the provider chose for it.
       causationId: parsed.idempotencyKey,
+    });
+    // The fields that tie this line to the request, the transaction and the wallet. Never the amount, the player, the
+    // round or the key: those are the payload (SR-01).
+    this.logger.log(result.idempotentReplay ? "Transaction replayed" : "Transaction decided", {
+      correlationId,
+      transactionId: result.transactionId,
+      walletId: parsed.walletId,
+      providerId: parsed.providerId,
+      status: result.status,
+      failureCode: result.failureCode,
+      durationMs: Math.round(performance.now() - started), // money-check: not-money a duration in milliseconds
     });
     const reply = submissionReply(result);
     response.status(reply.status);
