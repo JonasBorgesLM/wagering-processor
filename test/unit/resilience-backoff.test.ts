@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { backoffSeconds } from "../../../src/wagering/infrastructure/messaging/backoff";
+import { backoffSeconds } from "../../src/platform/resilience/backoff";
 
 const policy = { baseSeconds: 2, capSeconds: 30 };
 

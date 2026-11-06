@@ -207,6 +207,17 @@ publish each, outside the transaction      (crash here: lease expires, another i
 mark published                             (crash here: duplicate, safe through eventId, IR-03)
 ```
 
+**Implemented** as `PublishOutbox` (application) over two ports, `OutboxStore` and `EventPublisher`, with `MikroOrmOutboxStore`, `SqsEventPublisher` and a worker loop in the `publisher` role.
+
+- **The claim is one statement,** `UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED LIMIT n)`, so selecting and leasing cannot be pulled apart. `SKIP LOCKED` makes a publisher pass over rows another is claiming at that moment instead of waiting. The lease is `next_attempt_at = now + OUTBOX_LEASE_MS` and `attempts + 1`. Nothing is held while publishing, so a slow broker costs no connection (the alternative ADR-0007 rejected).
+- **Failure puts back the failed row and the rest of the batch, and stops.** If the broker is away each try would wait out its own timeout while the leases of the others run down, so the round ends at the first failure and the unattempted rows go back with the same backoff. That also keeps a wallet's events in the order they were claimed. The delay is `backoffSeconds(attempts)` (base `OUTBOX_RETRY_BASE_SECONDS`, cap `OUTBOX_RETRY_CAP_SECONDS`) with jitter, and there is **no attempt limit** (FR-91): an event is only ever delayed.
+- **Marking is conditional** (`published_at is null`), so a publisher that is late after its lease ran out changes nothing.
+- **Sending is bounded** (5 s per call, NFR-11). A round is at most one timeout long on failure, which is far inside the 30 s lease. A lease shorter than a slow publish causes a duplicate, which IR-03 accepts.
+- **The broker's own deduplication is an optimization.** `MessageDeduplicationId` is the outbox row's id (which is the `eventId`), so a repeat inside five minutes is dropped. After that window, or on another broker, a repeat arrives, and the consumer's `eventId` check is what holds (IR-03, NFR-05). The test asserts the repeat carries the same `eventId`.
+- **Order is not guaranteed across retries.** FIFO keeps a wallet's events in send order, but a retry can send an earlier event after a later one that was already out. `walletVersion` in `WalletBalanceChanged` is how a consumer restores the order.
+- **Stopping** waits for the round in progress (bounded by the send timeout), so what it claimed is published or put back and not left to its lease (FR-81).
+- **Not measured:** throughput. A round claims 25 rows and sends them one at a time; the defaults are judgements. `LISTEN/NOTIFY` as a wake-up is the reopening criterion of ADR-0007, not done.
+
 ### Retrying a pending reference
 
 The same claim pattern on `PENDING_REFERENCE` rows with a due `next_retry_at`, then the settlement flow from step 2. Expiry rejects with `REFERENCE_NOT_FOUND` (FR-42).
@@ -375,7 +386,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 2 | Schema: migrations, constraints, triggers, persistence records and mappers | Done |
 | 3 | Settlement use case and HTTP API | Done |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Consumer and inbox done (#15); backoff and DLQ done (#16); consumer shutdown done (#17) |
-| 5 | Outbox and publisher | Not started |
+| 5 | Outbox and publisher | Done (#18) |
 | 6 | Out-of-order references worker | Not started |
 | 7 | Reconciliation and observability | Not started |
 | 8 | Multi-process failure suite (challenge §13) | Not started |

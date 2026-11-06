@@ -9,8 +9,8 @@ import {
 } from "@aws-sdk/client-sqs";
 import { type BeforeApplicationShutdown, Logger, type OnApplicationBootstrap } from "@nestjs/common";
 import { QUEUES } from "../../../platform/config/config";
+import { type BackoffPolicy, backoffSeconds } from "../../../platform/resilience/backoff";
 import type { SubmitWagerTransaction } from "../../application/submit-wager-transaction";
-import { type BackoffPolicy, backoffSeconds } from "./backoff";
 import { classifyFailure } from "./classify-failure";
 import { CONSUMER_NAME, parseWagerMessage } from "./wager-message";
 
