@@ -1,143 +1,48 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import {
-  ChangeMessageVisibilityCommand,
-  GetQueueAttributesCommand,
-  GetQueueUrlCommand,
-  PurgeQueueCommand,
-  SendMessageCommand,
-  SQSClient,
-} from "@aws-sdk/client-sqs";
-import { QUEUES } from "../../src/platform/config/config";
+import { ChangeMessageVisibilityCommand, type SQSClient } from "@aws-sdk/client-sqs";
 import { TransientFailureError } from "../../src/wagering/application/errors";
-import type {
-  SubmissionResult,
-  SubmitWagerTransaction,
-} from "../../src/wagering/application/submit-wager-transaction";
 import { WagerQueueConsumer } from "../../src/wagering/infrastructure/messaging/wager-queue-consumer";
 import { startApp } from "../support/app";
-import { TEST_ENV } from "../support/env";
-import { provisionQueues } from "../support/queues";
+import {
+  depth,
+  eventually,
+  FAST,
+  inputUrl,
+  message,
+  purge,
+  queueIsEmpty,
+  send,
+  setUpQueues,
+  spyOnUseCase as spy,
+  sqs,
+  started,
+} from "../support/consumer-harness";
 import { SettlementWorld } from "../support/settlement";
 
 // Real PostgreSQL and a real broker. The consumer is built directly where a test needs to see or break the
 // acknowledgement, and through the application where it needs the wiring.
 
-const sqs = new SQSClient({
-  region: TEST_ENV.AWS_REGION,
-  endpoint: TEST_ENV.SQS_ENDPOINT,
-  credentials: { accessKeyId: TEST_ENV.AWS_ACCESS_KEY_ID, secretAccessKey: TEST_ENV.AWS_SECRET_ACCESS_KEY },
-});
 let world: SettlementWorld;
-let queueUrl: string;
+const spyOnUseCase = (override?: (call: number) => void) => spy(world, override);
 
 beforeAll(async () => {
-  await provisionQueues();
+  await setUpQueues();
   world = await SettlementWorld.create();
-  queueUrl = (await sqs.send(new GetQueueUrlCommand({ QueueName: QUEUES.input }))).QueueUrl as string;
 });
 afterAll(async () => {
   await purge();
   sqs.destroy();
   await world.destroy();
 });
-// The queue is shared with every other test file, so each test starts and ends with it empty.
 beforeEach(purge);
 afterEach(purge);
-
-async function purge(): Promise<void> {
-  await sqs.send(new PurgeQueueCommand({ QueueUrl: queueUrl })).catch(() => undefined);
-}
-
-async function depth(): Promise<{ visible: number; inFlight: number }> {
-  const { Attributes } = await sqs.send(
-    new GetQueueAttributesCommand({
-      QueueUrl: queueUrl,
-      AttributeNames: ["ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible"],
-    }),
-  );
-  return {
-    visible: Number(Attributes?.ApproximateNumberOfMessages),
-    inFlight: Number(Attributes?.ApproximateNumberOfMessagesNotVisible),
-  };
-}
-
-async function eventually(
-  check: () => Promise<boolean> | boolean,
-  what: string,
-  timeoutMs = 10_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await check()) return;
-    await Bun.sleep(50);
-  }
-  throw new Error(`timed out waiting for ${what}`);
-}
-
-const queueIsEmpty = async () => {
-  const { visible, inFlight } = await depth();
-  return visible + inFlight === 0;
-};
-
-function message(wallet: { walletId: string; playerId: string }, overrides: Record<string, unknown> = {}) {
-  const external = randomUUID();
-  const { messageId = `msg-${randomUUID()}`, ...data } = overrides;
-  return {
-    messageId,
-    type: "WagerTransactionRequested",
-    occurredAt: new Date().toISOString(),
-    data: {
-      providerId: "provider-a",
-      externalTransactionId: external,
-      idempotencyKey: `provider-a:${external}`,
-      playerId: wallet.playerId,
-      walletId: wallet.walletId,
-      roundId: "round-1",
-      gameId: "game-1",
-      kind: "BET",
-      money: { amount: "80.00", currency: "BRL" },
-      ...data,
-    },
-  };
-}
-
-function send(body: unknown, group: string, dedup = randomUUID()) {
-  return sqs.send(
-    new SendMessageCommand({
-      QueueUrl: queueUrl,
-      MessageBody: typeof body === "string" ? body : JSON.stringify(body),
-      MessageGroupId: group,
-      MessageDeduplicationId: dedup,
-    }),
-  );
-}
-
-/** The real use case, with a record of what it answered, so a test can tell a replay from a first delivery. */
-function spyOnUseCase(override?: (call: number) => void) {
-  const results: SubmissionResult[] = [];
-  let calls = 0;
-  const useCase = {
-    execute: async (...args: Parameters<SubmitWagerTransaction["execute"]>) => {
-      override?.(++calls);
-      const result = await world.useCase.execute(...args);
-      results.push(result);
-      return result;
-    },
-  } as unknown as SubmitWagerTransaction;
-  return { useCase, results, calls: () => calls };
-}
-
-const started = (consumer: WagerQueueConsumer) => {
-  consumer.onApplicationBootstrap();
-  return consumer;
-};
 
 describe("a message from the queue", () => {
   test("is settled with the HTTP use case, and acknowledged only afterwards", async () => {
     const wallet = await world.openWallet("100.00");
     const { useCase, results } = spyOnUseCase();
-    const consumer = started(new WagerQueueConsumer(sqs, useCase, 1));
+    const consumer = started(new WagerQueueConsumer(sqs, useCase, FAST));
     try {
       const body = message(wallet);
       await send(body, wallet.walletId);
@@ -157,7 +62,7 @@ describe("a message from the queue", () => {
   test("that is a business rejection is acknowledged too: it is an answer", async () => {
     const wallet = await world.openWallet("10.00");
     const { useCase, results } = spyOnUseCase();
-    const consumer = started(new WagerQueueConsumer(sqs, useCase, 1));
+    const consumer = started(new WagerQueueConsumer(sqs, useCase, FAST));
     try {
       await send(message(wallet), wallet.walletId);
       await eventually(queueIsEmpty, "the rejection to be acknowledged");
@@ -171,7 +76,7 @@ describe("a message from the queue", () => {
   test("delivered again, by the broker or by a provider, changes nothing", async () => {
     const wallet = await world.openWallet("100.00");
     const { useCase, results } = spyOnUseCase();
-    const consumer = started(new WagerQueueConsumer(sqs, useCase, 1));
+    const consumer = started(new WagerQueueConsumer(sqs, useCase, FAST));
     try {
       const body = message(wallet);
       await send(body, wallet.walletId);
@@ -218,7 +123,7 @@ describe("a worker killed after the commit and before the acknowledgement (§10)
       },
     }) as unknown as SQSClient;
     const a = spyOnUseCase();
-    const workerA = started(new WagerQueueConsumer(deaf, a.useCase, 1));
+    const workerA = started(new WagerQueueConsumer(deaf, a.useCase, FAST));
     await send(body, wallet.walletId);
     await eventually(() => lostHandle !== undefined, "worker A to commit and fail to acknowledge");
     await workerA.beforeApplicationShutdown();
@@ -229,13 +134,13 @@ describe("a worker killed after the commit and before the acknowledgement (§10)
     // The visibility timeout would bring it back in 30 s; the test brings it back now.
     await sqs.send(
       new ChangeMessageVisibilityCommand({
-        QueueUrl: queueUrl,
+        QueueUrl: inputUrl,
         ReceiptHandle: lostHandle,
         VisibilityTimeout: 0,
       }),
     );
     const b = spyOnUseCase();
-    const workerB = started(new WagerQueueConsumer(sqs, b.useCase, 1));
+    const workerB = started(new WagerQueueConsumer(sqs, b.useCase, FAST));
     try {
       await eventually(queueIsEmpty, "worker B to acknowledge the redelivery");
       expect(a.results.map((result) => result.idempotentReplay)).toEqual([false]);
@@ -249,7 +154,7 @@ describe("a worker killed after the commit and before the acknowledgement (§10)
   });
 });
 
-describe("a message that is not acknowledged", () => {
+describe("a message that fails transiently", () => {
   test("a transient failure leaves it in the queue, and the rest of its wallet's messages untouched", async () => {
     const wallet = await world.openWallet("100.00");
     const first = message(wallet, { money: { amount: "10.00", currency: "BRL" } });
@@ -261,7 +166,9 @@ describe("a message that is not acknowledged", () => {
     const { useCase, calls, results } = spyOnUseCase((call) => {
       if (call === 1) throw new TransientFailureError("the database is away");
     });
-    const consumer = started(new WagerQueueConsumer(sqs, useCase, 1));
+    // A long backoff, so the message stays hidden for the whole test and the group stays blocked.
+    const slow = { ...FAST, backoff: { baseSeconds: 30, capSeconds: 30 } };
+    const consumer = started(new WagerQueueConsumer(sqs, useCase, slow));
     try {
       await eventually(() => calls() >= 1, "the first attempt");
       await Bun.sleep(500);
@@ -270,61 +177,6 @@ describe("a message that is not acknowledged", () => {
       expect(results).toEqual([]);
       expect(await world.counts(wallet.walletId)).toEqual({ transactions: 0, entries: 0, events: 0 });
       expect((await depth()).visible + (await depth()).inFlight).toBe(2);
-    } finally {
-      await consumer.beforeApplicationShutdown();
-    }
-  });
-
-  test.each([
-    ["malformed JSON", () => "{not json"],
-    ["an unknown type", (w: { walletId: string; playerId: string }) => ({ ...message(w), type: "Other" })],
-    [
-      "an invalid payload",
-      (w: { walletId: string; playerId: string }) =>
-        message(w, { money: { amount: "1.5", currency: "BRL" } }),
-    ],
-    ["an OPENING", (w: { walletId: string; playerId: string }) => message(w, { kind: "OPENING" })],
-    ["a wallet that does not exist", () => message({ walletId: randomUUID(), playerId: randomUUID() })],
-  ])("%s is not acknowledged and changes nothing", async (_name, build) => {
-    const wallet = await world.openWallet("100.00");
-    const { useCase, results } = spyOnUseCase();
-    const consumer = started(new WagerQueueConsumer(sqs, useCase, 1));
-    try {
-      await send(build(wallet), wallet.walletId);
-      await eventually(async () => (await depth()).inFlight === 1, "the message to be received");
-      await Bun.sleep(300);
-
-      expect((await depth()).inFlight).toBe(1);
-      expect(
-        results.filter((result) => result.idempotentReplay === false && result.status !== "REJECTED"),
-      ).toEqual([]);
-      expect(await world.counts(wallet.walletId)).toEqual({ transactions: 0, entries: 0, events: 0 });
-      expect(await world.walletState(wallet.walletId)).toEqual({ balance: "100.00", version: 1 });
-    } finally {
-      await consumer.beforeApplicationShutdown();
-    }
-  });
-
-  test("a message id reused with other content is not acknowledged either (INT-17)", async () => {
-    const wallet = await world.openWallet("100.00");
-    const { useCase } = spyOnUseCase();
-    const consumer = started(new WagerQueueConsumer(sqs, useCase, 1));
-    try {
-      const original = message(wallet);
-      await send(original, wallet.walletId);
-      await eventually(queueIsEmpty, "the original");
-
-      const liar = message(wallet, {
-        messageId: original.messageId,
-        money: { amount: "5.00", currency: "BRL" },
-      });
-      await send(liar, wallet.walletId);
-      await eventually(async () => (await depth()).inFlight === 1, "the second to be received");
-      await Bun.sleep(300);
-
-      expect((await depth()).inFlight).toBe(1);
-      expect(await world.counts(wallet.walletId)).toEqual({ transactions: 1, entries: 1, events: 2 });
-      expect(await world.walletState(wallet.walletId)).toEqual({ balance: "20.00", version: 2 });
     } finally {
       await consumer.beforeApplicationShutdown();
     }

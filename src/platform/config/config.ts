@@ -7,6 +7,9 @@ export const QUEUES = {
   events: "wagering-events.fifo",
 } as const;
 
+/** How many deliveries a message gets. The input queue's redrive policy is provisioned with the same number. */
+export const MAX_RECEIVE_COUNT = 5;
+
 export interface AppConfig {
   readonly port: number;
   readonly roles: ReadonlySet<Role>;
@@ -24,6 +27,10 @@ export interface AppConfig {
   readonly databaseAcquireTimeoutMs: number;
   /** How long one poll of the input queue waits for a message. Also the longest stopping the consumer can take. */
   readonly queueWaitSeconds: number;
+  /** The first retry of a failed message waits about this long; each further delivery doubles it (NFR-11). */
+  readonly queueBackoffBaseSeconds: number;
+  /** The longest a failed message waits. SQS allows 12 hours; a wallet's later messages wait behind it (T-10). */
+  readonly queueBackoffCapSeconds: number;
 }
 
 export class InvalidConfigError extends Error {
@@ -44,6 +51,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     databasePoolMax: positiveInteger(env, "DATABASE_POOL_MAX", 10),
     databaseAcquireTimeoutMs: positiveInteger(env, "DATABASE_ACQUIRE_TIMEOUT_MS", 1_000),
     queueWaitSeconds: boundedInteger(env, "QUEUE_WAIT_SECONDS", 5, 20),
+    queueBackoffBaseSeconds: positiveInteger(env, "QUEUE_BACKOFF_BASE_SECONDS", 2),
+    queueBackoffCapSeconds: boundedInteger(env, "QUEUE_BACKOFF_CAP_SECONDS", 30, 43_200),
   };
 }
 
