@@ -69,6 +69,8 @@ export function transactionToRecord(transaction: WagerTransaction, updatedAt: Da
     processedAt: transaction.processedAt ?? null,
     createdAt: transaction.createdAt,
     updatedAt,
+    retryAttempts: 0,
+    nextRetryAt: null,
   };
 }
 

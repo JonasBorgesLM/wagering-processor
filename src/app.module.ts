@@ -26,6 +26,7 @@ export class AppModule {
           api: config.roles.has("api"),
           consumer: config.roles.has("consumer"),
           publisher: config.roles.has("publisher"),
+          referenceWorker: config.roles.has("reference-worker"),
         }),
       ],
     };

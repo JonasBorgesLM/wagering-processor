@@ -7,14 +7,8 @@ import {
   type WagerTransactionKind,
   type WagerTransactionStatus,
 } from "../domain/wager-transaction";
-import {
-  WagerTransactionPendingReference,
-  WagerTransactionProcessed,
-  WagerTransactionRejected,
-  WalletBalanceChanged,
-} from "../domain/wagering-events";
+import { WagerTransactionPendingReference } from "../domain/wagering-events";
 import type { Wallet } from "../domain/wallet";
-import { LedgerDirection } from "../domain/wallet-ledger-entry";
 import {
   DuplicateOperationError,
   ExternalIdConflictError,
@@ -24,6 +18,7 @@ import {
 } from "./errors";
 import { payloadHash } from "./payload-hash";
 import type { Clock, IdGenerator, TransactionContext, UnitOfWork } from "./ports";
+import { applyOutcome } from "./settlement-outcome";
 
 export interface SubmitWagerTransactionCommand {
   idempotencyKey: string;
@@ -46,6 +41,11 @@ export interface MessageSource {
   messageId: string;
 }
 
+export interface SubmitOptions {
+  /** How long a transaction that arrived before its reference waits before its first retry (FR-40, FR-41). */
+  firstReferenceRetryMs: number;
+}
+
 export interface SubmissionResult {
   transactionId: string;
   status: WagerTransactionStatus;
@@ -66,6 +66,7 @@ export class SubmitWagerTransaction {
     private readonly unitOfWork: UnitOfWork,
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
+    private readonly options: SubmitOptions = { firstReferenceRetryMs: 5_000 },
   ) {}
 
   async execute(command: SubmitWagerTransactionCommand, source?: MessageSource): Promise<SubmissionResult> {
@@ -197,44 +198,31 @@ export class SubmitWagerTransaction {
     });
 
     const now = this.clock.now();
-    const context = () => ({
-      eventId: this.ids.next(),
+    const outcome = {
+      ids: this.ids,
+      now,
       correlationId: command.correlationId,
       causationId: command.causationId,
-      occurredAt: now,
-    });
-    const events: Array<IntegrationEvent<object>> = [];
+    };
+    let events: Array<IntegrationEvent<object>>;
 
-    switch (decision.outcome) {
-      case "apply": {
-        const movement = { transactionId: transaction.id, entryId: this.ids.next(), at: now };
-        const entry =
-          decision.direction === undefined
-            ? undefined
-            : decision.direction === LedgerDirection.Debit
-              ? wallet.debit(transaction.money, movement)
-              : wallet.credit(transaction.money, movement);
-        transaction.markProcessed(decision.referenceTransactionId, wallet.balance, now);
-        // The transaction first: the ledger entry's foreign key points at it.
-        await tx.transactions.insert(transaction);
-        events.push(WagerTransactionProcessed.from(transaction, context()));
-        if (entry) {
-          await tx.wallets.save(wallet);
-          await tx.ledger.append(entry);
-          events.push(WalletBalanceChanged.from(wallet, entry, context()));
-        }
-        break;
-      }
-      case "reject":
-        transaction.reject(decision.code, decision.observedBalance);
-        await tx.transactions.insert(transaction);
-        events.push(WagerTransactionRejected.from(transaction, context()));
-        break;
-      case "wait-reference":
-        transaction.markPendingReference(decision.observedBalance);
-        await tx.transactions.insert(transaction);
-        events.push(WagerTransactionPendingReference.from(transaction, context()));
-        break;
+    if (decision.outcome === "wait-reference") {
+      transaction.markPendingReference(decision.observedBalance);
+      await tx.transactions.insert(transaction);
+      await tx.transactions.scheduleRetry(
+        transaction.id,
+        new Date(now.getTime() + this.options.firstReferenceRetryMs),
+      );
+      events = [
+        WagerTransactionPendingReference.from(transaction, {
+          eventId: this.ids.next(),
+          correlationId: command.correlationId,
+          causationId: command.causationId,
+          occurredAt: now,
+        }),
+      ];
+    } else {
+      events = await applyOutcome(tx, outcome, transaction, wallet, decision, "insert");
     }
     await tx.outbox.enqueue(events);
   }

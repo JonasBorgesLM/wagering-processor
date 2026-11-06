@@ -29,6 +29,14 @@ export interface TransactionContext {
     /** Whether a `PROCESSED` reversal already points at this transaction (ADR-0006). */
     isReversed(referenceTransactionId: string): Promise<boolean>;
     insert(transaction: WagerTransaction): Promise<void>;
+    findById(id: string): Promise<WagerTransaction | undefined>;
+    /**
+     * Writes the outcome of a transaction that was waiting for its reference, and ends its schedule. The row was
+     * inserted earlier; only the fields a settlement changes are written.
+     */
+    update(transaction: WagerTransaction): Promise<void>;
+    /** When a transaction that is waiting for its reference should be looked at again (FR-40). */
+    scheduleRetry(id: string, nextRetryAt: Date): Promise<void>;
   };
   ledger: {
     /** Append only: the port offers nothing else, and the database refuses anything else (SR-06). */
@@ -101,4 +109,21 @@ export interface OutboxStore {
 /** Sends an event to the broker. Resolves only when the broker has accepted it. */
 export interface EventPublisher {
   publish(entry: OutboxEntry): Promise<void>;
+}
+
+/** A transaction a worker has claimed because it was waiting for its reference and is due. */
+export interface WaitingTransaction {
+  id: string;
+  walletId: string;
+  /** Claims so far, this one included. */
+  attempts: number;
+}
+
+export interface PendingReferenceStore {
+  /**
+   * Claims up to `limit` due waiting transactions, oldest first, and pushes each one's `next_retry_at` forward by the
+   * lease in the same statement. Like the outbox, nothing is held afterwards: a worker that dies hands its rows on
+   * when the lease ends.
+   */
+  claimDue(limit: number, leaseMs: number, now: Date): Promise<WaitingTransaction[]>;
 }

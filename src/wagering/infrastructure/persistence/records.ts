@@ -42,6 +42,12 @@ export interface WagerTransactionRecord {
   createdAt: Date;
   /** Persistence's own audit column: the domain does not track it, so the caller supplies it. */
   updatedAt: Date;
+  /**
+   * The schedule of a transaction waiting for its reference. Persistence's, not the domain's: a new row has none,
+   * and it is set by `scheduleRetry` and read by the worker's claim (FR-44).
+   */
+  retryAttempts: number;
+  nextRetryAt: Date | null;
 }
 
 export interface LedgerEntryRecord {

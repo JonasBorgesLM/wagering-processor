@@ -51,6 +51,8 @@ export const WagerTransactionSchema = new EntitySchema<WagerTransactionRecord>({
     processedAt: { ...instant, nullable: true },
     createdAt: instant,
     updatedAt: instant,
+    retryAttempts: { type: "integer" },
+    nextRetryAt: { ...instant, nullable: true },
   },
 });
 
