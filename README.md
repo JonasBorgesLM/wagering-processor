@@ -4,7 +4,7 @@ A distributed financial service that applies betting operations from game provid
 
 Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge).
 
-> **Status: early.** The runtime, tooling, CI, documents, `Money`, `Wallet`, the ledger entry, the transaction lifecycle, the settlement rules, the integration events, the payload hash, the database schema, the persistence mappers, the settlement use case and the HTTP API are in place. **There is no wallet, transaction or ledger code yet**, so this does not process a bet today. See the [roadmap](ARCHITECTURE.md#roadmap).
+> **Status: early.** The runtime, tooling, CI, documents, `Money`, `Wallet`, the ledger entry, the transaction lifecycle, the settlement rules, the integration events, the payload hash, the database schema, the persistence mappers, the settlement use case, the HTTP API and the queue consumer are in place. Nothing publishes the stored events yet, and retries, the dead-letter path and draining are still to come. See the [roadmap](ARCHITECTURE.md#roadmap).
 
 ---
 
@@ -23,11 +23,12 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 - Persistence records and mappers between the domain and the tables, tested through a real PostgreSQL round trip with amounts beyond what a double holds. Nothing uses them yet: the settlement use case that reads and writes through them is next.
 - The layer rules are tested by breaking each one on purpose, not only by running the checker on code that obeys them.
 - The HTTP API: wallets, bets and reads of a transaction, with the idempotency header, one error envelope, a body limit and correlation ids, tested end to end against a real database with real parallelism, and checked across three processes. See the API section below.
-- Settlement: `SubmitWagerTransaction` takes the wallet lock, answers replays and conflicts, and commits the transaction, balance, ledger entry and events together, tested with real parallel connections on PostgreSQL. **Reachable over HTTP only:** there is no queue consumer yet, and nothing publishes the stored events.
-- Designed but not implemented: the inbox, publishing, retries and full shutdown, described in [Patterns](ARCHITECTURE.md#patterns).
+- Settlement: `SubmitWagerTransaction` takes the wallet lock, answers replays and conflicts, and commits the transaction, balance, ledger entry and events together, tested with real parallel connections on PostgreSQL. Nothing publishes the stored events yet.
+- The SQS consumer (`consumer` role): it reads `wager-transactions.fifo`, validates a message with the rules of the HTTP body, settles it with the same use case, and deletes it only after the commit. The inbox row is written in the settling transaction, so a rollback takes it too. Tested against the real broker, including a worker that commits and dies before acknowledging: the redelivery changes nothing. **A message that fails is left unacknowledged and the queue's receive limit sends it to the DLQ after 5 receives; immediate dead-lettering and jittered backoff are #16.**
+- Designed but not implemented: publishing, retries with backoff, the dead-letter shortcut and the draining deadline, described in [Patterns](ARCHITECTURE.md#patterns).
 - Contract tests on what the design relies on: row-lock serialization, the deadlock that fixes the lock order, exact `NUMERIC` strings, reversible migrations, FIFO group hold, deduplication, visibility and DLQ redrive.
 
-**Not verified yet:** draining with messages in flight, because the consumer does not exist.
+**Not verified yet:** draining with messages in flight (#17). Stopping the consumer is tested only for an idle one: it waits for the poll in progress, at most `QUEUE_WAIT_SECONDS`.
 
 ## A rule worth knowing first
 
