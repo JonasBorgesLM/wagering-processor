@@ -138,7 +138,7 @@ PENDING_REFERENCE ──▶ PROCESSED | REJECTED | FAILED
 
 - **FR-30** `PROCESSED`, `REJECTED` and `FAILED` are terminal. Transitioning out of them is a programming error, not a business path. A trigger also refuses updating or deleting such a row, so the rule and the audit trail hold if the code is wrong.
 - **FR-31** `PENDING` is the in-memory birth state; the first commit stores its outcome, because HTTP and SQS settle synchronously (`INT-10`).
-- **FR-32** `FAILED` is set only by the pending-reference worker, for a stored transaction that cannot be settled for non-business reasons after its attempts run out. Failures with no stored row go to retry or DLQ (`INT-11`). It carries `SETTLEMENT_FAILED`, never a business code, because a rejection blames the payload and an infrastructure fault must not (`INT-20`).
+- **FR-32** `FAILED` is set only by the pending-reference worker, for a stored transaction whose settlement throws an error that is not transient (a constraint, a bug): retrying a deterministic failure cannot change its answer, so it is `FAILED` at the first such error and not after a count of attempts (a transient error, such as a lock timeout, only waits for its lease to end and is not counted against it). Failures with no stored row go to retry or DLQ (`INT-11`). It carries `SETTLEMENT_FAILED`, never a business code, because a rejection blames the payload and an infrastructure fault must not (`INT-20`).
 
 ### 3.5 Settlement order
 
@@ -163,6 +163,11 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 - **FR-41** Default backoff starts at 5s, doubles, and caps at 5 min. TTL is 1 h and configurable. One hour outlasts ordinary provider and queue redelivery without leaving a reversal open for a whole gaming session (`INT-13`).
 - **FR-42** On expiry the transaction becomes `REJECTED` with `REFERENCE_NOT_FOUND`, and `WagerTransactionRejected` is published.
 - **FR-43** Balance is checked at settlement, not at arrival.
+- **FR-44** The schedule lives on the row (`retry_attempts`, `next_retry_at`), and only while the transaction is `PENDING_REFERENCE` (a check enforces it), so any instance finds a waiting transaction in the database and nothing is remembered by a process. `next_retry_at` is set when the transaction first waits (after `REFERENCE_RETRY_BASE_SECONDS`) and at each look that finds it still waiting (backoff with jitter up to `REFERENCE_RETRY_CAP_SECONDS`).
+- **FR-45** The `reference-worker` role claims due waiting transactions with a lease in one statement (`FOR UPDATE SKIP LOCKED`), oldest first, and settles each in its own transaction under the wallet lock, after re-reading it: a transaction that is no longer waiting is skipped. Several workers never settle the same transaction twice.
+- **FR-46** Expiry is judged after the settlement order, not before: a reference that arrived after the TTL but before the look still settles the transaction. `REFERENCE_NOT_FOUND` is for a wait that is still a wait when the TTL has passed.
+- **FR-47** A reversal whose reference is itself waiting keeps waiting, however long the chain (step 9), and is not rejected. Oldest first within a round lets the older settle before the younger looks at it. The younger's own TTL still applies.
+- **FR-48** A look that settles or rejects a waiting transaction publishes the same events as a first arrival would have (section 3.12); a look that finds it still waiting publishes nothing. The event's correlation and causation id are the transaction's own id, because the request that created it is no longer known.
 
 **Known limitation:** a `BET` arriving after its `ROLLBACK` expired is applied normally. There is no tombstone, because the README specifies waiting and then rejecting. The provider must issue a new reversal under a new id.
 
@@ -269,7 +274,7 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 - **FR-82** A transient failure makes the message invisible for a backoff that doubles with each delivery up to `QUEUE_BACKOFF_CAP_SECONDS`, drawn from the upper half of the ceiling so messages that failed together do not return together (`NFR-11`). Defaults: base 2 s, cap 30 s.
 - **FR-83** A message gets `MAX_RECEIVE_COUNT` (5) deliveries. A permanent failure goes to the DLQ on its first, and a transient or unrecognised one on its last, by an explicit copy (the body unchanged, with `FailureKind`, `FailureReason` and `Receives` as message attributes) followed by the delete. A failed copy leaves the message in the queue. The queue's redrive policy, provisioned with the same number, is the backstop for a worker that dies mid-handling.
 - **FR-80** On `SIGTERM`: stop polling, finish in-flight work within a deadline, return the visibility of the rest, and fail readiness. Stopping waits for the poll in progress and does not cancel it: a cancelled long poll is still open at the broker, which gives the next message to a connection nobody reads and hides it for the visibility timeout. Observed on the emulator. A poll is therefore short (`QUEUE_WAIT_SECONDS`, default 5, at most 20), and bounds how long stopping takes.
-- **FR-81** On `SIGTERM`, the publisher and the reference worker stop claiming and finish what they hold. (The publisher is tested; the reference worker does not exist yet.) Anything unfinished is safe, because its lease expires and another instance takes it.
+- **FR-81** On `SIGTERM`, the publisher and the reference worker stop claiming and finish what they hold. (Tested for both, on the real process.) Anything unfinished is safe, because its lease expires and another instance takes it.
 
 ### 3.12 Events (§11)
 

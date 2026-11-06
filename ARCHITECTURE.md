@@ -220,7 +220,27 @@ mark published                             (crash here: duplicate, safe through 
 
 ### Retrying a pending reference
 
-The same claim pattern on `PENDING_REFERENCE` rows with a due `next_retry_at`, then the settlement flow from step 2. Expiry rejects with `REFERENCE_NOT_FOUND` (FR-42).
+```text
+claim (one statement):  PENDING_REFERENCE, next_retry_at <= now, oldest first, FOR UPDATE SKIP LOCKED
+                        next_retry_at = now + lease; retry_attempts + 1
+per transaction, in its own SQL transaction:
+  SELECT wallet FOR UPDATE                      (ADR-0003)
+  re-read the transaction; no longer waiting -> skip
+  resolve the reference, decideSettlement       (the same pure function as a first arrival)
+  apply / reject -> UPDATE the row, ledger, wallet, outbox
+  wait, TTL not passed -> next_retry_at = now + backoff
+  wait, TTL passed -> reject REFERENCE_NOT_FOUND (FR-42)
+  error that is not transient -> FAILED, SETTLEMENT_FAILED (FR-32)
+```
+
+**Implemented** as `SettleWaitingReferences` over `PendingReferenceStore`, with the effects of an ending shared with a first arrival in `applyOutcome` (`insert` or `update` is the only difference), so the two cannot drift apart. `PollingWorker` in the platform runs it and the outbox publisher alike.
+
+- **The schedule is on the row** and is enforced by a check (`ck_wager_transactions_retry_only_while_waiting`), so it cannot outlive the wait. A transaction that first waits gets `next_retry_at` in the same SQL transaction as its insert.
+- **Nothing triggers a look when the reference arrives.** A reversal that is waiting is settled at its next look, within the backoff (5 s first, then doubling to 5 min). That is the specified behaviour and not an oversight: the alternative, settling waiting reversals from the settlement of their reference, couples two transactions under two wallet locks' ordering and was not needed. The cost is a reversal that waits up to the current backoff after its bet arrives.
+- **Oldest first** matters for chains: a reversal waiting on another reversal is always the younger, so within one round the older settles first and the younger finds it processed. If the older cannot settle, the younger keeps waiting (FR-47). If the older expires and is rejected, the younger is rejected `REFERENCE_NOT_PROCESSED` at its next look, which is the specified answer for a reference that was rejected.
+- **The wallet lock is taken before the re-read,** so by the time the status is checked nothing else is settling that wallet, and a transaction settled in the gap is skipped.
+- **A transient failure leaves the row as it is.** The lease it holds is its retry, and `retry_attempts` counts the claim.
+- **Not measured:** how many waiting rows a worker clears per second. A round is 25 transactions, each its own SQL transaction.
 
 ### Consumer
 
@@ -387,7 +407,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 3 | Settlement use case and HTTP API | Done |
 | 4 | SQS consumer, inbox, DLQ, shutdown | Consumer and inbox done (#15); backoff and DLQ done (#16); consumer shutdown done (#17) |
 | 5 | Outbox and publisher | Done (#18) |
-| 6 | Out-of-order references worker | Not started |
+| 6 | Out-of-order references worker | Done (#19) |
 | 7 | Reconciliation and observability | Not started |
 | 8 | Multi-process failure suite (challenge §13) | Not started |
 | 9 | Final documents, optional load test, release | Not started |
