@@ -12,7 +12,7 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 
 - The application boots on Bun with NestJS and MikroORM, as several instances selected by role.
 - `GET /health/live` and `GET /health/ready`, with real PostgreSQL and SQS checks, and `GET /metrics`.
-- `SIGTERM` drains through the shutdown hooks.
+- `SIGTERM` drains: readiness reports `draining`, the consumer stops polling, finishes the message in hand within `SHUTDOWN_TIMEOUT_MS`, and gives the rest back to the queue at once. Past the deadline the process exits 1 and the queue's visibility timeout returns what was unacknowledged. Tested on the real process with a message in flight.
 - Structured JSON logs with an allowlist of fields.
 - `Money`: exact `bigint` arithmetic with strict contract parsing and no rounding path.
 - `Wallet` and `WalletLedgerEntry`: a balance that cannot go negative, whose every change returns the entry that records it, and an entry that cannot be built unbalanced or changed afterwards. These are domain classes only; nothing stores them yet.
@@ -28,7 +28,7 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 - Designed but not implemented: publishing, the pending-reference worker and the draining deadline, described in [Patterns](ARCHITECTURE.md#patterns).
 - Contract tests on what the design relies on: row-lock serialization, the deadlock that fixes the lock order, exact `NUMERIC` strings, reversible migrations, FIFO group hold, deduplication, visibility and DLQ redrive.
 
-**Not verified yet:** draining with messages in flight (#17). Stopping the consumer is tested only for an idle one: it waits for the poll in progress, at most `QUEUE_WAIT_SECONDS`.
+**Not verified yet:** draining of the publisher and the reference worker (FR-81), because they do not exist. The consumer's draining is tested; stopping waits for the poll in progress, at most `QUEUE_WAIT_SECONDS`.
 
 ## A rule worth knowing first
 

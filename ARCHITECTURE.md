@@ -218,7 +218,7 @@ The same claim pattern on `PENDING_REFERENCE` rows with a due `next_retry_at`, t
 - **Stopping waits for the poll in progress and does not cancel it.** A cancelled long poll stays open at the broker, which delivers the next message to a connection nobody reads and hides it for the visibility timeout (30 s). It was observed on the emulator, and it took messages from the tests that followed, which is how it was found. The alternative, aborting for a fast exit, was rejected for that reason. The cost is that stopping takes up to `QUEUE_WAIT_SECONDS` (default 5, at most 20).
 - **Failures.** A permanent failure (REQUIREMENTS 3.11) is copied to the DLQ at its first delivery and deleted, and does not hold its wallet. A transient or unrecognised one has its visibility set to `backoffSeconds(receiveCount)` (FR-82): the ceiling is `base * 2^(n-1)` capped, and the delay is drawn from its upper half, so a retry is never immediate and a crowd that failed together is spread out. On the fifth delivery it is copied to the DLQ as `attempts-exhausted`. The copy comes before the delete, so a crash between them leaves a duplicate in the DLQ (its deduplication id is the message id) and never a lost message; if the copy fails the message stays in the queue and is delivered again. The DLQ message carries the body unchanged and the reason as attributes, so it can be put back as it is.
 - **The cost of the bound.** Five deliveries with the default backoff span roughly 15 to 30 seconds. A database outage longer than that dead-letters what was in flight. That is the bound doing its job, and the price is an operator replaying the DLQ, which is safe because every operation is idempotent. A longer tolerance is `QUEUE_BACKOFF_CAP_SECONDS` and `MAX_RECEIVE_COUNT` (the latter provisioned with the queue). The defaults are judgements, not measured.
-- **Not done here:** returning the visibility of unhandled messages at shutdown, the deadline and the readiness are #17. Until then, messages received but not handled at shutdown come back after the visibility timeout.
+- **Shutdown.** The message in hand finishes; the rest of the batch is returned with visibility 0 (see Graceful shutdown). If returning fails, the visibility timeout does it later.
 - **A FIFO group is held by an unacknowledged message,** so one failing message delays its wallet's later messages for the visibility timeout (T-10).
 
 ### Consumer classification
@@ -322,12 +322,18 @@ The order matters:
 ```text
 SIGTERM
   1. readiness fails, so routing stops            (done, tested)
-  2. stop polling and stop claiming               (FR-80, FR-81, not implemented)
-  3. finish in-flight work, up to the deadline    (FR-80, not implemented)
-  4. return the visibility of the rest            (FR-80, not implemented)
+  2. stop polling                                 (consumer: done, tested; publisher and reference worker: FR-81, with #18 and #19)
+  3. finish in-flight work, up to the deadline    (consumer: done, tested)
+  4. return the visibility of the rest            (consumer: done, tested)
   5. close database and SQS clients               (done)
-  deadline exceeded: exit; unacked work returns by itself
+  deadline exceeded: exit 1; unacked work returns by itself   (done, tested)
 ```
+
+**Readiness must fail before anything waits.** Nest runs the shutdown hooks of different modules one after another, so the consumer's hook, which waits for the message in hand, delayed the hook that flipped readiness: the first version of the test saw `/health/ready` answer 200 for as long as the message took. `DrainState` now lives in the platform and the consumer calls `begin` before it waits. The test failed on that before the fix.
+
+**What the tests do.** They run the real entry point as a process, hold a wallet lock from the test so a message cannot finish for as long as the test wants, send three messages for three wallets, and signal. In the graceful case the lock is released after the signal: the message finishes and is deleted, the two that had not started are returned with visibility 0 (visible at once, not after 30 s), readiness reported `draining` meanwhile, and the exit code is 143. In the deadline case (`SHUTDOWN_TIMEOUT_MS=2000`) the lock is never released: the process exits 1 near the deadline, nothing is applied or deleted, and after the visibility timeout another worker settles all three exactly once.
+
+**Not covered.** The deadline test needs the 30 s visibility timeout to pass, so it takes about 40 s. A `SIGKILL` is covered by the redelivery test of #15 (a worker that commits and never acknowledges), not by a process kill here. The publisher and the reference worker do not exist yet, so FR-81 is unverified.
 
 Shutdown is an optimization of recovery, not the guarantee. `kill -9` must also be safe, and the failure suite proves that.
 
@@ -368,7 +374,7 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 1 | Domain: `Money`, `Wallet`, `WagerTransaction`, ledger, settlement policy, integration events, payload hash | Done |
 | 2 | Schema: migrations, constraints, triggers, persistence records and mappers | Done |
 | 3 | Settlement use case and HTTP API | Done |
-| 4 | SQS consumer, inbox, DLQ, shutdown | Consumer and inbox done (#15); backoff and DLQ done (#16); shutdown (#17) not started |
+| 4 | SQS consumer, inbox, DLQ, shutdown | Consumer and inbox done (#15); backoff and DLQ done (#16); consumer shutdown done (#17) |
 | 5 | Outbox and publisher | Not started |
 | 6 | Out-of-order references worker | Not started |
 | 7 | Reconciliation and observability | Not started |
