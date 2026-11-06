@@ -4,14 +4,27 @@ import { type DynamicModule, Module } from "@nestjs/common";
 import { type AppConfig, MAX_RECEIVE_COUNT } from "../../platform/config/config";
 import { APP_CONFIG } from "../../platform/config/config.module";
 import { DrainState } from "../../platform/lifecycle/drain-state";
+import { backoffSeconds } from "../../platform/resilience/backoff";
 import { OpenWallet } from "../application/open-wallet";
-import type { Clock, IdGenerator, TransactionReader, UnitOfWork, WalletReader } from "../application/ports";
+import type {
+  Clock,
+  EventPublisher,
+  IdGenerator,
+  OutboxStore,
+  TransactionReader,
+  UnitOfWork,
+  WalletReader,
+} from "../application/ports";
+import { PublishOutbox } from "../application/publish-outbox";
 import { QueryTransactions } from "../application/query-transactions";
 import { QueryWallets } from "../application/query-wallets";
 import { SubmitWagerTransaction } from "../application/submit-wager-transaction";
 import { TransactionsController } from "./http/transactions.controller";
 import { WalletsController } from "./http/wallets.controller";
+import { OutboxPublisherWorker } from "./messaging/outbox-publisher-worker";
+import { SqsEventPublisher } from "./messaging/sqs-event-publisher";
 import { WagerQueueConsumer } from "./messaging/wager-queue-consumer";
+import { MikroOrmOutboxStore } from "./persistence/mikro-orm-outbox-store";
 import { MikroOrmTransactionReader } from "./persistence/mikro-orm-transaction-reader";
 import { MikroOrmUnitOfWork } from "./persistence/mikro-orm-unit-of-work";
 import { MikroOrmWalletReader } from "./persistence/mikro-orm-wallet-reader";
@@ -23,6 +36,8 @@ export const ID_GENERATOR = Symbol("ID_GENERATOR");
 export const UNIT_OF_WORK = Symbol("UNIT_OF_WORK");
 export const WALLET_READER = Symbol("WALLET_READER");
 export const TRANSACTION_READER = Symbol("TRANSACTION_READER");
+export const OUTBOX_STORE = Symbol("OUTBOX_STORE");
+export const EVENT_PUBLISHER = Symbol("EVENT_PUBLISHER");
 
 /** Every controller that serves business routes, so a test can check that each carries the auth guard. */
 export const BUSINESS_CONTROLLERS = [WalletsController, TransactionsController];
@@ -30,7 +45,7 @@ export const BUSINESS_CONTROLLERS = [WalletsController, TransactionsController];
 @Module({})
 export class WageringModule {
   /** `api` decides whether this process serves HTTP at all: a process running only the publisher has no routes (ADR-0001). */
-  static register(options: { api: boolean; consumer: boolean }): DynamicModule {
+  static register(options: { api: boolean; consumer: boolean; publisher: boolean }): DynamicModule {
     const limits = (config: AppConfig) => ({
       lockTimeoutMs: config.lockTimeoutMs,
       statementTimeoutMs: config.statementTimeoutMs,
@@ -78,6 +93,47 @@ export class WageringModule {
           useFactory: (uow: UnitOfWork, clock: Clock, ids: IdGenerator) =>
             new SubmitWagerTransaction(uow, clock, ids),
         },
+        ...(options.publisher
+          ? [
+              {
+                provide: OUTBOX_STORE,
+                inject: [MikroORM, APP_CONFIG],
+                useFactory: (orm: MikroORM, config: AppConfig) =>
+                  new MikroOrmOutboxStore(orm, limits(config)),
+              },
+              {
+                provide: EVENT_PUBLISHER,
+                inject: [SQSClient],
+                useFactory: (sqs: SQSClient) => new SqsEventPublisher(sqs),
+              },
+              {
+                provide: PublishOutbox,
+                inject: [OUTBOX_STORE, EVENT_PUBLISHER, CLOCK, APP_CONFIG],
+                useFactory: (
+                  store: OutboxStore,
+                  publisher: EventPublisher,
+                  clock: Clock,
+                  config: AppConfig,
+                ) =>
+                  new PublishOutbox(store, publisher, clock, {
+                    batchSize: config.outboxBatchSize,
+                    leaseMs: config.outboxLeaseMs,
+                    retryDelayMs: (attempts) =>
+                      1000 *
+                      backoffSeconds(attempts, {
+                        baseSeconds: config.outboxRetryBaseSeconds,
+                        capSeconds: config.outboxRetryCapSeconds,
+                      }),
+                  }),
+              },
+              {
+                provide: OutboxPublisherWorker,
+                inject: [PublishOutbox, APP_CONFIG, DrainState],
+                useFactory: (useCase: PublishOutbox, config: AppConfig, drain: DrainState) =>
+                  new OutboxPublisherWorker(useCase, config.outboxPollIntervalMs, drain),
+              },
+            ]
+          : []),
         ...(options.consumer
           ? [
               {

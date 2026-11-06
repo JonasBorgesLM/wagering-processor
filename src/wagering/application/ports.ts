@@ -74,3 +74,31 @@ export interface Clock {
 export interface IdGenerator {
   next(): string;
 }
+
+/** One row of the outbox that a publisher has claimed (FR-90, ADR-0007). */
+export interface OutboxEntry {
+  id: string;
+  eventType: string;
+  aggregateId: string;
+  /** The event's envelope, as stored. */
+  payload: object;
+  /** How many times it has been claimed, this claim included. */
+  attempts: number;
+}
+
+export interface OutboxStore {
+  /**
+   * Claims up to `limit` due rows in one short transaction, and pushes each row's `next_attempt_at` forward by the
+   * lease before committing. A row claimed here is invisible to every other publisher until the lease runs out, so
+   * nothing is held while publishing, and a publisher that dies hands its rows on by itself.
+   */
+  claimDue(limit: number, leaseMs: number, now: Date): Promise<OutboxEntry[]>;
+  markPublished(id: string, at: Date): Promise<void>;
+  /** Puts a row back for a later attempt. Nothing is ever given up on (FR-91). */
+  reschedule(id: string, nextAttemptAt: Date): Promise<void>;
+}
+
+/** Sends an event to the broker. Resolves only when the broker has accepted it. */
+export interface EventPublisher {
+  publish(entry: OutboxEntry): Promise<void>;
+}

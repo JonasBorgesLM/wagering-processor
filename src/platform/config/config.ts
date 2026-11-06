@@ -31,6 +31,15 @@ export interface AppConfig {
   readonly queueBackoffBaseSeconds: number;
   /** The longest a failed message waits. SQS allows 12 hours; a wallet's later messages wait behind it (T-10). */
   readonly queueBackoffCapSeconds: number;
+  /** How long a publisher sleeps when the outbox has nothing due. */
+  readonly outboxPollIntervalMs: number;
+  /** Rows one publisher claims per round. */
+  readonly outboxBatchSize: number;
+  /** How long a claimed row is invisible to other publishers. A publisher that dies delays its rows by this much. */
+  readonly outboxLeaseMs: number;
+  /** A failed publication waits about this long, doubling per attempt up to the cap. There is no attempt limit. */
+  readonly outboxRetryBaseSeconds: number;
+  readonly outboxRetryCapSeconds: number;
 }
 
 export class InvalidConfigError extends Error {
@@ -53,6 +62,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     queueWaitSeconds: boundedInteger(env, "QUEUE_WAIT_SECONDS", 5, 20),
     queueBackoffBaseSeconds: positiveInteger(env, "QUEUE_BACKOFF_BASE_SECONDS", 2),
     queueBackoffCapSeconds: boundedInteger(env, "QUEUE_BACKOFF_CAP_SECONDS", 30, 43_200),
+    outboxPollIntervalMs: positiveInteger(env, "OUTBOX_POLL_INTERVAL_MS", 500),
+    outboxBatchSize: boundedInteger(env, "OUTBOX_BATCH_SIZE", 25, 1_000),
+    outboxLeaseMs: positiveInteger(env, "OUTBOX_LEASE_MS", 30_000),
+    outboxRetryBaseSeconds: positiveInteger(env, "OUTBOX_RETRY_BASE_SECONDS", 1),
+    outboxRetryCapSeconds: boundedInteger(env, "OUTBOX_RETRY_CAP_SECONDS", 60, 3_600),
   };
 }
 
