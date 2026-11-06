@@ -4,7 +4,7 @@ A distributed financial service that applies betting operations from game provid
 
 Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge).
 
-> **Status: early.** The runtime, tooling, CI, documents, `Money`, `Wallet`, the ledger entry, the transaction lifecycle, the settlement rules, the integration events, the payload hash, the database schema, the persistence mappers, the settlement use case, the HTTP API and the queue consumer are in place. Nothing publishes the stored events yet, and retries, the dead-letter path and draining are still to come. See the [roadmap](ARCHITECTURE.md#roadmap).
+> **Status: early.** The runtime, tooling, CI, documents, `Money`, `Wallet`, the ledger entry, the transaction lifecycle, the settlement rules, the integration events, the payload hash, the database schema, the persistence mappers, the settlement use case, the HTTP API, the queue consumer and the outbox publisher are in place. The worker for out-of-order references, reconciliation and the metrics are still to come. See the [roadmap](ARCHITECTURE.md#roadmap).
 
 ---
 
@@ -23,12 +23,13 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 - Persistence records and mappers between the domain and the tables, tested through a real PostgreSQL round trip with amounts beyond what a double holds. Nothing uses them yet: the settlement use case that reads and writes through them is next.
 - The layer rules are tested by breaking each one on purpose, not only by running the checker on code that obeys them.
 - The HTTP API: wallets, bets and reads of a transaction, with the idempotency header, one error envelope, a body limit and correlation ids, tested end to end against a real database with real parallelism, and checked across three processes. See the API section below.
-- Settlement: `SubmitWagerTransaction` takes the wallet lock, answers replays and conflicts, and commits the transaction, balance, ledger entry and events together, tested with real parallel connections on PostgreSQL. Nothing publishes the stored events yet.
+- Settlement: `SubmitWagerTransaction` takes the wallet lock, answers replays and conflicts, and commits the transaction, balance, ledger entry and events together, tested with real parallel connections on PostgreSQL. The `publisher` role then sends the stored events to `wagering-events.fifo`.
 - The SQS consumer (`consumer` role): it reads `wager-transactions.fifo`, validates a message with the rules of the HTTP body, settles it with the same use case, and deletes it only after the commit. The inbox row is written in the settling transaction, so a rollback takes it too. Tested against the real broker, including a worker that commits and dies before acknowledging: the redelivery changes nothing. A permanent failure goes to the DLQ at once with its reason; a transient one is retried with a jittered, growing backoff and goes to the DLQ after 5 deliveries. Tested with PostgreSQL really stopped. **An outage longer than about 30 s with the defaults dead-letters what was in flight** (safe to replay, but manual).
-- Designed but not implemented: publishing, the pending-reference worker and the draining deadline, described in [Patterns](ARCHITECTURE.md#patterns).
+- The outbox publisher (`publisher` role): claims due rows with a lease (`FOR UPDATE SKIP LOCKED`, one statement), publishes outside any transaction to `wagering-events.fifo` (group = wallet, deduplication id = `eventId`), then marks the row. Tested with several publishers at once (every event sent once), a publisher that dies after claiming (another takes the rows when the lease ends), a broker that is away (rows back off, none lost, publish when it returns), a crash between publishing and marking (published again under the same `eventId`), and as a real process that drains on `SIGTERM`. **Delivery is at least once:** a consumer of the events must deduplicate on `eventId` and order by `walletVersion`.
+- Designed but not implemented: the pending-reference worker, reconciliation and the metrics, described in [Patterns](ARCHITECTURE.md#patterns).
 - Contract tests on what the design relies on: row-lock serialization, the deadlock that fixes the lock order, exact `NUMERIC` strings, reversible migrations, FIFO group hold, deduplication, visibility and DLQ redrive.
 
-**Not verified yet:** draining of the publisher and the reference worker (FR-81), because they do not exist. The consumer's draining is tested; stopping waits for the poll in progress, at most `QUEUE_WAIT_SECONDS`.
+**Not verified yet:** draining of the reference worker (FR-81), because it does not exist. The consumer's and the publisher's draining are tested; stopping waits for the poll in progress, at most `QUEUE_WAIT_SECONDS`.
 
 ## A rule worth knowing first
 

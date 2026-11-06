@@ -269,7 +269,7 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 - **FR-82** A transient failure makes the message invisible for a backoff that doubles with each delivery up to `QUEUE_BACKOFF_CAP_SECONDS`, drawn from the upper half of the ceiling so messages that failed together do not return together (`NFR-11`). Defaults: base 2 s, cap 30 s.
 - **FR-83** A message gets `MAX_RECEIVE_COUNT` (5) deliveries. A permanent failure goes to the DLQ on its first, and a transient or unrecognised one on its last, by an explicit copy (the body unchanged, with `FailureKind`, `FailureReason` and `Receives` as message attributes) followed by the delete. A failed copy leaves the message in the queue. The queue's redrive policy, provisioned with the same number, is the backstop for a worker that dies mid-handling.
 - **FR-80** On `SIGTERM`: stop polling, finish in-flight work within a deadline, return the visibility of the rest, and fail readiness. Stopping waits for the poll in progress and does not cancel it: a cancelled long poll is still open at the broker, which gives the next message to a connection nobody reads and hides it for the visibility timeout. Observed on the emulator. A poll is therefore short (`QUEUE_WAIT_SECONDS`, default 5, at most 20), and bounds how long stopping takes.
-- **FR-81** On `SIGTERM`, the publisher and the reference worker stop claiming and finish what they hold. Anything unfinished is safe, because its lease expires and another instance takes it.
+- **FR-81** On `SIGTERM`, the publisher and the reference worker stop claiming and finish what they hold. (The publisher is tested; the reference worker does not exist yet.) Anything unfinished is safe, because its lease expires and another instance takes it.
 
 ### 3.12 Events (§11)
 
@@ -282,6 +282,8 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 | Replay, or `FAILED` | None required by the minimum set; `FAILED` is logged and counted |
 
 - **FR-90** Events are written in the same SQL transaction as the state change and published only by the outbox worker, to a dedicated queue `wagering-events.fifo` (`INT-19`).
+- **FR-95** A publisher claims due rows with a lease in one statement (`FOR UPDATE SKIP LOCKED`), publishes outside any transaction and marks them published. Two publishers never claim the same row while its lease holds, and a publisher that dies delays its rows by at most one lease (`OUTBOX_LEASE_MS`). The `publisher` role runs it.
+- **FR-96** When publishing fails, the failed row and the unattempted rest of the batch are rescheduled with an exponential, jittered backoff and the round ends. Rows are never given up on, and a publication is bounded by a timeout (`NFR-11`).
 - **FR-91** Publication is at-least-once, with no attempt limit. `eventId` is the consumer's dedup key. `walletVersion` lets consumers restore balance order, since retries can reorder events.
 
 #### 3.12.1 Event contract, version 1
