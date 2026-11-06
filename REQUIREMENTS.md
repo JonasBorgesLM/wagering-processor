@@ -254,6 +254,9 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 - **FR-70** Compares the stored balance with the ledger sum, and checks the entry chain (each `balanceBefore` equals the previous `balanceAfter`).
 - **FR-71** Reads a consistent snapshot without taking the wallet lock, so it does not stall a hot wallet.
 - **FR-72** A divergence is logged, counted in a metric and flagged in the response. It is never corrected. `difference` is signed.
+- **FR-97** `POST /wallets/:walletId/reconciliation` answers `200` with `walletId`, `storedBalance`, `calculatedBalance` (credits minus debits), `difference` (stored minus calculated, signed), `consistent`, `checkedEntries`, and `issueCount` with the first 20 `issues`. `consistent` needs both a zero difference and no issue, because a balance can add up while the entries do not. An unknown wallet is `404`. Being a POST is the challenge's choice; it changes nothing and can be repeated.
+- **FR-98** An entry is an issue when it does not add up (`ENTRY_UNBALANCED`), is not in the wallet's currency (`CURRENCY_MISMATCH`), or does not continue the entry before it, the first starting from zero (`CHAIN_BROKEN`). The schema refuses the first and the third at write time (`ck_ledger_arithmetic`, the append-only trigger), so these can appear only when a defence has been removed, which is when this check matters.
+- **FR-99** Every check counts in `wagering_reconciliations_total{result}` and a divergent one logs an error naming the wallet. The counter has no wallet label, since one series per wallet is unbounded.
 
 ### 3.11 SQS consumer (§10)
 
