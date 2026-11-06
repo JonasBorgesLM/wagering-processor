@@ -162,6 +162,41 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
         async insert(transaction) {
           await em.insert(WagerTransactionSchema, transactionToRecord(transaction, clock.now()));
         },
+        async findById(id) {
+          const record = await em.findOne(WagerTransactionSchema, { id }, { disableIdentityMap: true });
+          return record ? transactionFromRecord(record) : undefined;
+        },
+        async update(transaction) {
+          const record = transactionToRecord(transaction, clock.now());
+          // Only what a settlement changes. The identity of the operation is immutable, and the schedule ends here.
+          await em.getConnection().execute(
+            `update wager_transactions
+                  set status = ?, failure_code = ?, observed_balance = ?, processed_at = ?,
+                      reference_transaction_id = ?, updated_at = ?, next_retry_at = null
+                where id = ?`,
+            [
+              record.status,
+              record.failureCode,
+              record.observedBalance,
+              record.processedAt,
+              record.referenceTransactionId,
+              record.updatedAt,
+              record.id,
+            ],
+            "run",
+            em.getTransactionContext(),
+          );
+        },
+        async scheduleRetry(id, nextRetryAt) {
+          await em
+            .getConnection()
+            .execute(
+              "update wager_transactions set next_retry_at = ?, updated_at = ? where id = ? and status = 'PENDING_REFERENCE'",
+              [nextRetryAt, clock.now(), id],
+              "run",
+              em.getTransactionContext(),
+            );
+        },
       },
       ledger: {
         async append(entry) {

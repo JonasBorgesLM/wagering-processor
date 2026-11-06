@@ -48,11 +48,13 @@ describe("every business controller carries it", () => {
   });
 
   test("the module serves them only to a process with the api role (ADR-0001)", () => {
-    expect(WageringModule.register({ api: true, consumer: false, publisher: false }).controllers).toEqual(
-      BUSINESS_CONTROLLERS,
-    );
-    expect(WageringModule.register({ api: false, consumer: false, publisher: false }).controllers).toEqual(
-      [],
-    );
+    expect(
+      WageringModule.register({ api: true, consumer: false, publisher: false, referenceWorker: false })
+        .controllers,
+    ).toEqual(BUSINESS_CONTROLLERS);
+    expect(
+      WageringModule.register({ api: false, consumer: false, publisher: false, referenceWorker: false })
+        .controllers,
+    ).toEqual([]);
   });
 });

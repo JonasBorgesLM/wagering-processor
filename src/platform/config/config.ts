@@ -40,6 +40,15 @@ export interface AppConfig {
   /** A failed publication waits about this long, doubling per attempt up to the cap. There is no attempt limit. */
   readonly outboxRetryBaseSeconds: number;
   readonly outboxRetryCapSeconds: number;
+  /** How long a transaction may wait for a reference that has not arrived before it is rejected (FR-41). */
+  readonly referenceTtlSeconds: number;
+  /** A waiting transaction is looked at again after about this long, doubling per look up to the cap (FR-41). */
+  readonly referenceRetryBaseSeconds: number;
+  readonly referenceRetryCapSeconds: number;
+  readonly referenceBatchSize: number;
+  /** How long a claimed waiting transaction is invisible to other workers. */
+  readonly referenceLeaseMs: number;
+  readonly referencePollIntervalMs: number;
 }
 
 export class InvalidConfigError extends Error {
@@ -67,6 +76,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     outboxLeaseMs: positiveInteger(env, "OUTBOX_LEASE_MS", 30_000),
     outboxRetryBaseSeconds: positiveInteger(env, "OUTBOX_RETRY_BASE_SECONDS", 1),
     outboxRetryCapSeconds: boundedInteger(env, "OUTBOX_RETRY_CAP_SECONDS", 60, 3_600),
+    referenceTtlSeconds: positiveInteger(env, "REFERENCE_TTL_SECONDS", 3_600),
+    referenceRetryBaseSeconds: positiveInteger(env, "REFERENCE_RETRY_BASE_SECONDS", 5),
+    referenceRetryCapSeconds: boundedInteger(env, "REFERENCE_RETRY_CAP_SECONDS", 300, 3_600),
+    referenceBatchSize: boundedInteger(env, "REFERENCE_BATCH_SIZE", 25, 1_000),
+    referenceLeaseMs: positiveInteger(env, "REFERENCE_LEASE_MS", 30_000),
+    referencePollIntervalMs: positiveInteger(env, "REFERENCE_POLL_INTERVAL_MS", 1_000),
   };
 }
 
