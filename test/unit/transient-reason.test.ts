@@ -12,6 +12,8 @@ describe("why a database call was transient, as a label (NFR-06)", () => {
     [{ sqlState: "40001" }, "serialization_failure"],
     [{ sqlState: "57014" }, "statement_timeout"],
     [{ message: POOL_TIMEOUT_MESSAGE }, "pool_timeout"],
+    [new Error("Connection terminated due to connection timeout"), "connection"],
+    [new Error("Connection terminated unexpectedly"), "connection"],
     [{ code: "ECONNREFUSED" }, "connection"],
     [{ sqlState: "08006" }, "connection"],
     [{ sqlState: "57P01" }, "connection"],

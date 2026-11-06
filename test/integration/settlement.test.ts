@@ -575,6 +575,43 @@ describe("a full connection pool is transient too (NFR-11)", () => {
   });
 });
 
+describe("a database that accepts the connection and never answers is transient", () => {
+  // Found by the failure suite on a slow CI runner: opening a new connection took longer than the connection timeout,
+  // and the client reports that as a bare Error ("Connection terminated due to connection timeout") with no code. It
+  // was not recognised, so it was a 500 that no provider would retry. A server that accepts and stays silent
+  // provokes the real error on every machine.
+  test("the real error is recognised, so HTTP answers 503 and not 500", async () => {
+    const { MikroORM } = await import("@mikro-orm/postgresql");
+    const { createOrmConfig } = await import("../../src/platform/database/mikro-orm.config");
+    const silent = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {}, open() {} } });
+    const orm = await MikroORM.init(
+      createOrmConfig(`postgres://wagering:wagering@127.0.0.1:${silent.port}/wagering`, "migrations", [], {
+        acquireTimeoutMs: 200,
+      }),
+    );
+    try {
+      const raw = await orm.em
+        .fork()
+        .transactional(async () => undefined)
+        .catch((error: unknown) => error);
+      expect(String((raw as Error).message)).toContain("Connection terminated");
+
+      const seen: string[] = [];
+      const away = new MikroOrmUnitOfWork(orm, world.clock, {
+        lockTimeoutMs: 50,
+        statementTimeoutMs: 50,
+        onTransientFailure: (reason) => seen.push(reason),
+      });
+      const failure = await away.run(async () => undefined).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(TransientFailureError);
+      expect(seen).toEqual(["connection"]);
+    } finally {
+      await orm.close(true);
+      silent.stop(true);
+    }
+  });
+});
+
 describe("an unreachable database is transient", () => {
   test("the connection failure is classified, so HTTP answers 503", async () => {
     const { MikroORM } = await import("@mikro-orm/postgresql");

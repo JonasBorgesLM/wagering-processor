@@ -34,6 +34,12 @@ const OPERATION_KEYS = ["uq_wager_transactions_idempotency_key", "uq_wager_trans
 const TRANSIENT_SQLSTATES = new Set(["55P03", "40P01", "40001", "57014", "57P01", "57P02", "57P03", "53300"]);
 const TRANSIENT_SQLSTATE_CLASS = "08";
 export const POOL_TIMEOUT_MESSAGE = "timeout exceeded when trying to connect";
+/**
+ * What the client reports when a connection it was opening, or one it had, is gone: "Connection terminated due to
+ * connection timeout" when opening one took longer than the connection timeout, and "Connection terminated
+ * unexpectedly" when the server closed it. Both are bare errors with no code, so the message is all there is.
+ */
+export const CONNECTION_TERMINATED_MESSAGE = "Connection terminated";
 const TRANSIENT_NETWORK_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EPIPE", "ENOTFOUND"]);
 
 interface DatabaseError {
@@ -48,6 +54,7 @@ export function transientReason(error: unknown): TransientReason {
   const { code, sqlState, message } = (error ?? {}) as DatabaseError;
   const state = typeof sqlState === "string" ? sqlState : typeof code === "string" ? code : "";
   if (String(message ?? "").includes(POOL_TIMEOUT_MESSAGE)) return "pool_timeout";
+  if (String(message ?? "").includes(CONNECTION_TERMINATED_MESSAGE)) return "connection";
   if (state === "55P03") return "lock_timeout";
   if (state === "40P01") return "deadlock";
   if (state === "40001") return "serialization_failure";
@@ -72,6 +79,9 @@ export function classifyPersistenceError(error: unknown): unknown {
   // provokes the real error, so an upgrade that rewords it fails there and not silently in production.
   if (text.includes(POOL_TIMEOUT_MESSAGE)) {
     return new TransientFailureError("no database connection became free in time", { cause: error });
+  }
+  if (text.includes(CONNECTION_TERMINATED_MESSAGE)) {
+    return new TransientFailureError("database connection lost or too slow to open", { cause: error });
   }
   if (
     state === "23505" &&

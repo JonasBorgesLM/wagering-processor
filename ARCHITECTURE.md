@@ -193,6 +193,7 @@ A request needs a connection for as long as it holds a lock, and a lock can be w
 - **The worst case for one request** is therefore about the acquire wait plus the lock wait plus its own work, a little over three seconds at the defaults, and it ends as a `503` with `Retry-After` and not as a hang.
 - **A full pool is told apart from a lock timeout** in the log (`no database connection became free` against `55P03`), and both are warnings: the system is shedding load as designed.
 - **The pool's error is recognised by its message,** because `pg-pool` raises a bare `Error` with no code. A test provokes the real one, so an upgrade that rewords it fails there and not silently in production.
+- **So is a connection that could not be opened in time, or was closed:** the client reports `Connection terminated due to connection timeout` (opening one took longer than `DATABASE_ACQUIRE_TIMEOUT_MS`, which also bounds opening) and `Connection terminated unexpectedly`, again with no code. **The failure suite found this on the CI runner:** under 90 concurrent requests on two cores, opening new connections took over a second, and the unrecognised error was a `500` that no provider would retry. It is a `503` now. A test provokes it with a server that accepts the connection and never answers.
 - **What the burst test proves:** with four connections, a 200 ms connection wait and a 300 ms lock wait, a burst on a locked wallet ends every request as applied, rejected or `503`, never a `500` and never a hang. At most four requests ever waited on the lock, which is what shows the pool is the cap. Retrying everything with the same keys then applies each exactly once.
 - **Not measured:** how these numbers behave under sustained load. They are judgements, and the load test (`test:load`, optional) is where they would be revisited.
 
@@ -367,6 +368,27 @@ A duplicate is stopped at several independent layers, so no single one has to be
 
 **Retry and circuit breaker, deliberately different.** Retrying is safe only because of idempotency. A **circuit breaker does not fit** today: with PostgreSQL down no request can succeed anyway, it fails fast through `lock_timeout` and connection errors, and readiness already removes the instance from routing. Failing work on the queue already waits through visibility. A breaker would add state per instance to protect a dependency that has no fallback. Reopen if the load test shows requests piling up during an outage.
 
+### The failure suite
+
+`test/concurrency/multiprocess.test.ts` runs the eight mandatory scenarios of challenge §13 against **real application processes** (`bun run src/main.ts`, three or more at a time) sharing one PostgreSQL and one broker, and ends every test on the invariant `balance == the balance the ledger rebuilds` (never negative). In-process tests cannot show a kill, a restart or a second instance taking over, which is what these exist for.
+
+| § | Scenario | How it is made deterministic |
+| --- | --- | --- |
+| 1 | the same bet 50 times at once, three processes | one request each, all started together; the answer is the same transaction every time |
+| 2 | operations contending for one balance | the §8 pair on twelve wallets; thirty bets of 10.00 against 50.00 (exactly five apply) |
+| 3 | different wallets at once | thirty wallets, three bets each |
+| 4 | three processes, every role | HTTP, queue, duplicates and an early refund together; every event ends up published |
+| 5 | worker killed after the commit and before the ack | the acknowledgement is **held at a proxy** in front of the real broker, so the process has committed and cannot have acknowledged; the test kills it there |
+| 6 | publishers on one outbox | three publishers (each row claimed once); a publisher killed holding a claim, its send held at the proxy, and the survivors take over after the lease |
+| 7 | reversal before its reference | two workers and a chain (rollback of a refund of a bet, all first); forty made due at the same instant for three workers |
+| 8 | restart | eight wallets' locks are held by the test, so their requests are inside a transaction when all three processes are killed; new processes get every request again with the same keys |
+
+**No sleeping to hope for a race.** A kill happens at a state the test has found: a held request at the proxy, a lock the test holds, a count it has waited for. The proxy forwards everything else to the real broker unchanged and rewrites queue urls so the client does not walk around it; it holds requests and nothing more.
+
+**What was removed, once each, and seen red:** the wallet lock; the idempotency lookup; acknowledging before the use case runs; the outbox lease; marking before publishing (events lost when the publisher is killed); `SKIP LOCKED` on the outbox; `SKIP LOCKED` on the pending-reference claim. One protection is not covered by a multi-process scenario: the re-read of a waiting transaction under the wallet lock only matters when a lease ran out and the row was claimed twice, which the in-process test builds deliberately; across processes the leases already keep claims exclusive.
+
+**Not covered.** A process killed at an arbitrary instruction (the kill points are the ones above); a database that is killed rather than stopped (a stopped one is tested with the consumer); a clock that disagrees between hosts (the lease is the database's clock for the claim and the process's for the retry).
+
 ### Graceful shutdown
 
 The order matters:
@@ -430,5 +452,5 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 5 | Outbox and publisher | Done (#18) |
 | 6 | Out-of-order references worker | Done (#19) |
 | 7 | Reconciliation and observability | Done (#20, #21) |
-| 8 | Multi-process failure suite (challenge §13) | Not started |
+| 8 | Multi-process failure suite (challenge §13) | Done (#22) |
 | 9 | Final documents, optional load test, release | Not started |
