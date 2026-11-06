@@ -1,7 +1,7 @@
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { type DynamicModule, Module } from "@nestjs/common";
-import type { AppConfig } from "../../platform/config/config";
+import { type AppConfig, MAX_RECEIVE_COUNT } from "../../platform/config/config";
 import { APP_CONFIG } from "../../platform/config/config.module";
 import { OpenWallet } from "../application/open-wallet";
 import type { Clock, IdGenerator, TransactionReader, UnitOfWork, WalletReader } from "../application/ports";
@@ -83,7 +83,14 @@ export class WageringModule {
                 provide: WagerQueueConsumer,
                 inject: [SQSClient, SubmitWagerTransaction, APP_CONFIG],
                 useFactory: (sqs: SQSClient, useCase: SubmitWagerTransaction, config: AppConfig) =>
-                  new WagerQueueConsumer(sqs, useCase, config.queueWaitSeconds),
+                  new WagerQueueConsumer(sqs, useCase, {
+                    waitSeconds: config.queueWaitSeconds,
+                    backoff: {
+                      baseSeconds: config.queueBackoffBaseSeconds,
+                      capSeconds: config.queueBackoffCapSeconds,
+                    },
+                    maxReceives: MAX_RECEIVE_COUNT,
+                  }),
               },
             ]
           : []),

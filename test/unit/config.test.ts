@@ -56,6 +56,15 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...valid, QUEUE_WAIT_SECONDS: "0" })).toThrow(InvalidConfigError);
   });
 
+  test("the retry backoff starts at 2 s and is capped at 30 s, and takes both from the environment", () => {
+    expect(loadConfig(valid)).toMatchObject({ queueBackoffBaseSeconds: 2, queueBackoffCapSeconds: 30 });
+    expect(
+      loadConfig({ ...valid, QUEUE_BACKOFF_BASE_SECONDS: "1", QUEUE_BACKOFF_CAP_SECONDS: "600" }),
+    ).toMatchObject({ queueBackoffBaseSeconds: 1, queueBackoffCapSeconds: 600 });
+    expect(() => loadConfig({ ...valid, QUEUE_BACKOFF_CAP_SECONDS: "43201" })).toThrow(InvalidConfigError);
+    expect(() => loadConfig({ ...valid, QUEUE_BACKOFF_BASE_SECONDS: "0" })).toThrow(InvalidConfigError);
+  });
+
   test.each(["0", "-1", "1.5", "abc", "1e3"])("rejects PORT=%s", (port) => {
     expect(() => loadConfig({ ...valid, PORT: port })).toThrow(InvalidConfigError);
   });

@@ -1,17 +1,33 @@
 import {
+  ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
   GetQueueUrlCommand,
   type Message,
   ReceiveMessageCommand,
+  SendMessageCommand,
   type SQSClient,
 } from "@aws-sdk/client-sqs";
 import { type BeforeApplicationShutdown, Logger, type OnApplicationBootstrap } from "@nestjs/common";
 import { QUEUES } from "../../../platform/config/config";
 import type { SubmitWagerTransaction } from "../../application/submit-wager-transaction";
+import { type BackoffPolicy, backoffSeconds } from "./backoff";
 import { classifyFailure } from "./classify-failure";
 import { CONSUMER_NAME, parseWagerMessage } from "./wager-message";
 
 const RETRY_DELAY_MS = 1_000;
+
+interface Queues {
+  input: string;
+  deadLetter: string;
+}
+
+export interface ConsumerOptions {
+  /** How long one poll waits for a message. Also the longest stopping can take. */
+  waitSeconds: number;
+  backoff: BackoffPolicy;
+  /** Deliveries a message gets before it is dead-lettered. The queue's redrive policy says the same number. */
+  maxReceives: number;
+}
 
 /**
  * Reads the input queue and settles each message with the same use case as the HTTP endpoint (§10).
@@ -28,7 +44,7 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
   constructor(
     private readonly sqs: SQSClient,
     private readonly useCase: SubmitWagerTransaction,
-    private readonly waitSeconds: number,
+    private readonly options: ConsumerOptions,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -54,16 +70,16 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
   }
 
   private async run(): Promise<void> {
-    const queueUrl = await this.resolveQueue();
-    while (queueUrl && !this.stopping) {
+    const queues = await this.resolveQueues();
+    while (queues && !this.stopping) {
       let messages: Message[];
       try {
         const received = await this.sqs.send(
           new ReceiveMessageCommand({
-            QueueUrl: queueUrl,
+            QueueUrl: queues.input,
             MaxNumberOfMessages: 10,
-            WaitTimeSeconds: this.waitSeconds,
-            MessageSystemAttributeNames: ["MessageGroupId"],
+            WaitTimeSeconds: this.options.waitSeconds,
+            MessageSystemAttributeNames: ["MessageGroupId", "ApproximateReceiveCount"],
           }),
         );
         messages = received.Messages ?? [];
@@ -73,21 +89,25 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
         await this.pause();
         continue;
       }
-      await this.handleBatch(queueUrl, messages);
+      await this.handleBatch(queues, messages);
     }
   }
 
-  /** The queue may not exist yet when this process starts, and a missing broker is not a reason to die. */
-  private async resolveQueue(): Promise<string | undefined> {
+  /** The queues may not exist yet when this process starts, and a missing broker is not a reason to die. */
+  private async resolveQueues(): Promise<Queues | undefined> {
     while (!this.stopping) {
       try {
-        const { QueueUrl } = await this.sqs.send(new GetQueueUrlCommand({ QueueName: QUEUES.input }), {
-          abortSignal: this.abort.signal,
-        });
-        if (QueueUrl) return QueueUrl;
+        const url = async (name: string) =>
+          (
+            await this.sqs.send(new GetQueueUrlCommand({ QueueName: name }), {
+              abortSignal: this.abort.signal,
+            })
+          ).QueueUrl;
+        const [input, deadLetter] = await Promise.all([url(QUEUES.input), url(QUEUES.deadLetter)]);
+        if (input && deadLetter) return { input, deadLetter };
       } catch (error) {
         if (this.stopping) return undefined;
-        this.logger.warn("Input queue not reachable yet", { error: describe(error) });
+        this.logger.warn("Queues not reachable yet", { error: describe(error) });
       }
       await this.pause();
     }
@@ -100,18 +120,18 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
    * is waiting to be retried would only produce reorderings the settlement has to absorb (NFR-05). Left unacked,
    * they come back with the failed one.
    */
-  private async handleBatch(queueUrl: string, messages: Message[]): Promise<void> {
+  private async handleBatch(queues: Queues, messages: Message[]): Promise<void> {
     const blocked = new Set<string>();
     for (const message of messages) {
       if (this.stopping) return;
       const group = message.Attributes?.MessageGroupId ?? message.MessageId ?? "";
       if (blocked.has(group)) continue;
-      if (!(await this.handle(queueUrl, message))) blocked.add(group);
+      if (!(await this.handle(queues, message))) blocked.add(group);
     }
   }
 
-  /** Whether the message is finished with, so the next of its group may go. */
-  private async handle(queueUrl: string, message: Message): Promise<boolean> {
+  /** Whether the message is finished with, so the next of its wallet may go. */
+  private async handle(queues: Queues, message: Message): Promise<boolean> {
     try {
       const { messageId, command } = parseWagerMessage(message.Body);
       const result = await this.useCase.execute(command, { consumerName: CONSUMER_NAME, messageId });
@@ -121,15 +141,94 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
         status: result.status,
       });
     } catch (error) {
-      const action = classifyFailure(error);
-      // The first attempt at a fix for every unknown failure is to read the log, so it says what it was.
-      this.logger[action === "retry" ? "warn" : "error"](
-        action === "retry" ? "Message left for redelivery" : "Message cannot be processed",
-        { messageId: message.MessageId, error: describe(error) },
+      return this.failed(queues, message, error);
+    }
+    await this.acknowledge(queues.input, message);
+    return true;
+  }
+
+  /**
+   * A permanent failure goes to the DLQ at once, and so does a message whose deliveries ran out: retrying either
+   * only delays the verdict. A transient one is made invisible for a backoff that grows with the deliveries, so
+   * a database that is away is not hit again at once by every message that failed on it.
+   */
+  private async failed(queues: Queues, message: Message, error: unknown): Promise<boolean> {
+    const receives = Number(message.Attributes?.ApproximateReceiveCount ?? 1); // money-check: not-money a delivery count
+    const permanent = classifyFailure(error) === "dead-letter";
+    const exhausted = !permanent && receives >= this.options.maxReceives;
+
+    if (permanent || exhausted) {
+      this.logger.error(permanent ? "Message cannot be processed" : "Message ran out of attempts", {
+        messageId: message.MessageId,
+        error: describe(error),
+      });
+      return this.deadLetter(
+        queues,
+        message,
+        permanent ? "permanent" : "attempts-exhausted",
+        error,
+        receives,
       );
-      return false;
     }
 
+    const delay = backoffSeconds(receives, this.options.backoff);
+    this.logger.warn(`Message will be retried in ${delay}s`, {
+      messageId: message.MessageId,
+      error: describe(error),
+    });
+    try {
+      await this.sqs.send(
+        new ChangeMessageVisibilityCommand({
+          QueueUrl: queues.input,
+          ReceiptHandle: message.ReceiptHandle,
+          VisibilityTimeout: delay,
+        }),
+      );
+    } catch (visibilityError) {
+      // The default visibility timeout then applies: later, but still a retry.
+      this.logger.warn("Setting the backoff failed", { error: describe(visibilityError) });
+    }
+    return false;
+  }
+
+  /**
+   * Copies the message to the DLQ with the reason, and only then deletes it, so a crash in between leaves a
+   * duplicate in the DLQ at worst (its deduplication id is the original message id) and never a lost message.
+   * If the copy fails the message stays where it is and is delivered again.
+   */
+  private async deadLetter(
+    queues: Queues,
+    message: Message,
+    kind: "permanent" | "attempts-exhausted",
+    error: unknown,
+    receives: number,
+  ): Promise<boolean> {
+    try {
+      await this.sqs.send(
+        new SendMessageCommand({
+          QueueUrl: queues.deadLetter,
+          MessageBody: message.Body ?? "",
+          MessageGroupId: message.Attributes?.MessageGroupId ?? message.MessageId,
+          MessageDeduplicationId: message.MessageId,
+          MessageAttributes: {
+            FailureKind: { DataType: "String", StringValue: kind },
+            FailureReason: { DataType: "String", StringValue: describe(error).slice(0, 1000) },
+            Receives: { DataType: "Number", StringValue: String(receives) },
+          },
+        }),
+      );
+    } catch (sendError) {
+      this.logger.error("Dead-lettering failed; the message stays in the queue", {
+        messageId: message.MessageId,
+        error: describe(sendError),
+      });
+      return false;
+    }
+    await this.acknowledge(queues.input, message);
+    return true;
+  }
+
+  private async acknowledge(queueUrl: string, message: Message): Promise<void> {
     try {
       await this.sqs.send(
         new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: message.ReceiptHandle }),
@@ -138,7 +237,6 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
       // Committed but not acknowledged: it will be delivered again and found in the inbox. Nothing is lost.
       this.logger.warn("Acknowledging failed; the message will be redelivered", { error: describe(error) });
     }
-    return true;
   }
 
   private pause(): Promise<void> {
