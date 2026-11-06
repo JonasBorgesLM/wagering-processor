@@ -200,7 +200,10 @@ describe("3. different wallets at once, through three processes", () => {
       Array.from({ length: 3 }, () => command(wallet, { money: brl("10.00") })),
     );
     const replies = await Promise.all(requests.map((op, i) => submit(roundRobin(processes, i), op)));
-    expect(replies.every((reply) => reply.status === 200)).toBe(true);
+    const seen = await Promise.all(
+      replies.map(async (reply) => `${reply.status} ${JSON.stringify(await reply.json())}`),
+    );
+    expect(seen.filter((answer) => !answer.startsWith("200 "))).toEqual([]);
     for (const wallet of wallets) {
       expect(await world.walletState(wallet.walletId)).toEqual({ balance: "70.00", version: 4 });
     }
@@ -515,18 +518,20 @@ describe("8. every process killed, then restarted", () => {
       const inFlight = requests.map((op, i) => submit(roundRobin(first, i), op).catch(() => undefined));
       void inFlight;
 
+      let seen = "nothing yet";
       await eventually(
         async () => {
-          const done = await world.sql(
+          const done = await count(
             "select count(*)::int as n from wager_transactions where wallet_id = any(?::uuid[]) and kind <> 'OPENING'",
             [`{${free.map((wallet) => wallet.walletId).join(",")}}`],
           );
-          const waiting = await world.sql(
+          const waiting = await count(
             "select count(*)::int as n from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()",
           );
-          return done[0]?.n === free.length * 3 && waiting[0]?.n >= stuck.length;
+          seen = `${done} of ${free.length * 3} free transactions committed, ${waiting} of ${stuck.length} backends waiting on a lock`;
+          return done === free.length * 3 && waiting >= stuck.length;
         },
-        "the free wallets to finish and the stuck ones to be waiting on their locks",
+        () => `the free wallets to finish and the stuck ones to be waiting on their locks; saw ${seen}`,
         60_000,
       );
 
@@ -540,7 +545,10 @@ describe("8. every process killed, then restarted", () => {
       // New processes; every request is sent again with the same key.
       const second = await Promise.all(Array.from({ length: 3 }, () => cluster.start(roles)));
       const replies = await Promise.all(requests.map((op, i) => submit(roundRobin(second, i), op)));
-      expect(replies.every((reply) => reply.status === 200)).toBe(true);
+      const answers = await Promise.all(
+        replies.map(async (reply) => `${reply.status} ${JSON.stringify(await reply.json())}`),
+      );
+      expect(answers.filter((answer) => !answer.startsWith("200 "))).toEqual([]);
 
       for (const wallet of wallets) {
         expect(await world.walletState(wallet.walletId)).toEqual({ balance: "70.00", version: 4 });

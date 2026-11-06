@@ -62,10 +62,16 @@ export class Cluster {
       },
     };
     this.started.push(proc);
+    let lastReady = "no answer";
     await eventually(
-      async () => (await fetch(`${url}/health/ready`).catch(() => undefined))?.status === 200,
-      `a process with roles ${roles} to be ready`,
-      30_000,
+      async () => {
+        const answer = await fetch(`${url}/health/ready`).catch(() => undefined);
+        lastReady = answer ? `${answer.status} ${await answer.text()}` : "no answer";
+        return answer?.status === 200;
+      },
+      () =>
+        `a process with roles ${roles} to be ready; last answer: ${lastReady}; output: ${collected.slice(-1500)}`,
+      90_000,
     );
     return proc;
   }

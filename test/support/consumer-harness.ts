@@ -68,7 +68,8 @@ export async function depth(queueUrl = inputUrl): Promise<{ visible: number; inF
 
 export async function eventually(
   check: () => Promise<boolean> | boolean,
-  what: string,
+  /** What was being waited for. A function is asked at the end, so the message can say what was seen meanwhile. */
+  what: string | (() => string),
   timeoutMs = 10_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -76,7 +77,7 @@ export async function eventually(
     if (await check()) return;
     await Bun.sleep(50);
   }
-  throw new Error(`timed out waiting for ${what}`);
+  throw new Error(`timed out waiting for ${typeof what === "function" ? what() : what}`);
 }
 
 export const queueIsEmpty = async (queueUrl = inputUrl) => {
