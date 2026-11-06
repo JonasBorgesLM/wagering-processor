@@ -1,18 +1,22 @@
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { type DynamicModule, Logger, Module } from "@nestjs/common";
+import { Registry } from "prom-client";
 import { type AppConfig, MAX_RECEIVE_COUNT } from "../../platform/config/config";
 import { APP_CONFIG } from "../../platform/config/config.module";
 import { DrainState } from "../../platform/lifecycle/drain-state";
 import { PollingWorker } from "../../platform/lifecycle/polling-worker";
+import { MetricsModule } from "../../platform/metrics/metrics.module";
 import { backoffSeconds } from "../../platform/resilience/backoff";
 import { OpenWallet } from "../application/open-wallet";
 import type {
   Clock,
+  DivergenceReporter,
   EventPublisher,
   IdGenerator,
   OutboxStore,
   PendingReferenceStore,
+  ReconciliationReader,
   TransactionReader,
   UnitOfWork,
   WalletReader,
@@ -20,14 +24,17 @@ import type {
 import { PublishOutbox } from "../application/publish-outbox";
 import { QueryTransactions } from "../application/query-transactions";
 import { QueryWallets } from "../application/query-wallets";
+import { ReconcileWallet } from "../application/reconcile-wallet";
 import { SettleWaitingReferences } from "../application/settle-waiting-references";
 import { SubmitWagerTransaction } from "../application/submit-wager-transaction";
 import { TransactionsController } from "./http/transactions.controller";
 import { WalletsController } from "./http/wallets.controller";
 import { SqsEventPublisher } from "./messaging/sqs-event-publisher";
 import { WagerQueueConsumer } from "./messaging/wager-queue-consumer";
+import { PrometheusDivergenceReporter } from "./metrics/prometheus-divergence-reporter";
 import { MikroOrmOutboxStore } from "./persistence/mikro-orm-outbox-store";
 import { MikroOrmPendingReferenceStore } from "./persistence/mikro-orm-pending-reference-store";
+import { MikroOrmReconciliationReader } from "./persistence/mikro-orm-reconciliation-reader";
 import { MikroOrmTransactionReader } from "./persistence/mikro-orm-transaction-reader";
 import { MikroOrmUnitOfWork } from "./persistence/mikro-orm-unit-of-work";
 import { MikroOrmWalletReader } from "./persistence/mikro-orm-wallet-reader";
@@ -44,6 +51,8 @@ export const EVENT_PUBLISHER = Symbol("EVENT_PUBLISHER");
 export const OUTBOX_WORKER = Symbol("OUTBOX_WORKER");
 export const PENDING_REFERENCE_STORE = Symbol("PENDING_REFERENCE_STORE");
 export const REFERENCE_WORKER = Symbol("REFERENCE_WORKER");
+export const RECONCILIATION_READER = Symbol("RECONCILIATION_READER");
+export const DIVERGENCE_REPORTER = Symbol("DIVERGENCE_REPORTER");
 
 /** Every controller that serves business routes, so a test can check that each carries the auth guard. */
 export const BUSINESS_CONTROLLERS = [WalletsController, TransactionsController];
@@ -63,6 +72,7 @@ export class WageringModule {
     });
     return {
       module: WageringModule,
+      imports: [MetricsModule],
       providers: [
         { provide: CLOCK, useValue: new SystemClock() },
         { provide: ID_GENERATOR, useValue: new UuidV7Generator() },
@@ -76,6 +86,23 @@ export class WageringModule {
           provide: WALLET_READER,
           inject: [MikroORM, APP_CONFIG],
           useFactory: (orm: MikroORM, config: AppConfig) => new MikroOrmWalletReader(orm, limits(config)),
+        },
+        {
+          provide: RECONCILIATION_READER,
+          inject: [MikroORM, APP_CONFIG],
+          useFactory: (orm: MikroORM, config: AppConfig) =>
+            new MikroOrmReconciliationReader(orm, limits(config)),
+        },
+        {
+          provide: DIVERGENCE_REPORTER,
+          inject: [Registry],
+          useFactory: (registry: Registry) => new PrometheusDivergenceReporter(registry),
+        },
+        {
+          provide: ReconcileWallet,
+          inject: [RECONCILIATION_READER, DIVERGENCE_REPORTER],
+          useFactory: (reader: ReconciliationReader, reporter: DivergenceReporter) =>
+            new ReconcileWallet(reader, reporter),
         },
         {
           provide: OpenWallet,

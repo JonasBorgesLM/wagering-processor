@@ -1,4 +1,5 @@
 import type { IntegrationEvent } from "../domain/integration-event";
+import type { Money } from "../domain/money";
 import type { WagerTransaction } from "../domain/wager-transaction";
 import type { Wallet } from "../domain/wallet";
 import type { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
@@ -126,4 +127,44 @@ export interface PendingReferenceStore {
    * when the lease ends.
    */
   claimDue(limit: number, leaseMs: number, now: Date): Promise<WaitingTransaction[]>;
+}
+
+export type LedgerIssueKind = "ENTRY_UNBALANCED" | "CHAIN_BROKEN" | "CURRENCY_MISMATCH";
+
+export interface LedgerIssue {
+  walletVersion: number;
+  kind: LedgerIssueKind;
+}
+
+/** One wallet and its whole ledger, read as of a single instant (FR-71). */
+export interface LedgerSnapshot {
+  storedBalance: Money;
+  credits: Money;
+  debits: Money;
+  checkedEntries: number;
+  /** All the entries with a problem, though `issues` holds only the first few. */
+  issueCount: number;
+  issues: LedgerIssue[];
+}
+
+export interface ReconciliationReader {
+  /** Takes no lock. One consistent snapshot of the wallet and its entries, or `undefined` for no such wallet. */
+  snapshot(walletId: string): Promise<LedgerSnapshot | undefined>;
+}
+
+export interface ReconciliationReport {
+  walletId: string;
+  storedBalance: Money;
+  calculatedBalance: Money;
+  /** Stored minus calculated, signed: positive when the wallet holds more than its ledger explains. */
+  difference: Money;
+  consistent: boolean;
+  checkedEntries: number;
+  issueCount: number;
+  issues: LedgerIssue[];
+}
+
+/** Where a divergence is made visible (FR-72). The report itself is the response; this is the log and the metric. */
+export interface DivergenceReporter {
+  checked(report: ReconciliationReport): void;
 }
