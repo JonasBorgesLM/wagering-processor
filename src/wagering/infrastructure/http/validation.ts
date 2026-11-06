@@ -178,64 +178,92 @@ export function parseSubmitTransaction(
   if (header === undefined) issues.add("Idempotency-Key", "is required");
   else if (typeof header !== "string") issues.add("Idempotency-Key", "must be given once");
 
-  const object = exactObject(
-    body,
-    "",
-    ["providerId", "externalTransactionId", "playerId", "walletId", "roundId", "gameId", "kind", "money"],
-    issues,
-    ["referenceExternalTransactionId"],
-  );
+  const object = exactObject(body, "", OPERATION_KEYS, issues, ["referenceExternalTransactionId"]);
+  const operation = parseOperation(object, "", issues);
+
+  issues.throwIfAny();
+  return { idempotencyKey: idempotencyKey as string, ...(operation as Operation) };
+}
+
+export type Operation = Omit<SubmitRequest, "idempotencyKey">;
+
+export const OPERATION_KEYS = [
+  "providerId",
+  "externalTransactionId",
+  "playerId",
+  "walletId",
+  "roundId",
+  "gameId",
+  "kind",
+  "money",
+] as const;
+
+/**
+ * The fields of one provider operation, whichever way it arrived: the HTTP body and the queue message carry the
+ * same ones and are held to the same rules (SR-02). `prefix` names where they sit in what the provider sent, so an
+ * issue points at `data.money` and not at a bare `money`. Problems are collected in `issues`; the caller throws.
+ */
+export function parseOperation(
+  object: Record<string, unknown> | undefined,
+  prefix: string,
+  issues: Issues,
+): Operation | undefined {
   const get = (key: string) => (object && key in object ? object[key] : undefined);
 
   let providerId =
-    object && "providerId" in object ? parseText(object.providerId, "providerId", issues) : undefined;
+    object && "providerId" in object
+      ? parseText(object.providerId, `${prefix}providerId`, issues)
+      : undefined;
   if (providerId === INTERNAL_PROVIDER_ID) {
-    issues.add("providerId", `"${INTERNAL_PROVIDER_ID}" is reserved`);
+    issues.add(`${prefix}providerId`, `"${INTERNAL_PROVIDER_ID}" is reserved`);
     providerId = undefined;
   }
   const externalTransactionId =
     object && "externalTransactionId" in object
-      ? parseText(object.externalTransactionId, "externalTransactionId", issues)
+      ? parseText(object.externalTransactionId, `${prefix}externalTransactionId`, issues)
       : undefined;
   const playerId =
-    object && "playerId" in object ? parseUuid(object.playerId, "playerId", issues) : undefined;
+    object && "playerId" in object ? parseUuid(object.playerId, `${prefix}playerId`, issues) : undefined;
   const walletId =
-    object && "walletId" in object ? parseUuid(object.walletId, "walletId", issues) : undefined;
-  const roundId = object && "roundId" in object ? parseText(object.roundId, "roundId", issues) : undefined;
-  const gameId = object && "gameId" in object ? parseText(object.gameId, "gameId", issues) : undefined;
+    object && "walletId" in object ? parseUuid(object.walletId, `${prefix}walletId`, issues) : undefined;
+  const roundId =
+    object && "roundId" in object ? parseText(object.roundId, `${prefix}roundId`, issues) : undefined;
+  const gameId =
+    object && "gameId" in object ? parseText(object.gameId, `${prefix}gameId`, issues) : undefined;
 
   let kind: WagerTransactionKind | undefined;
   if (object && "kind" in object) {
     if (object.kind === WagerTransactionKind.Opening)
-      issues.add("kind", "OPENING is internal and cannot be submitted");
+      issues.add(`${prefix}kind`, "OPENING is internal and cannot be submitted");
     else if (typeof object.kind !== "string" || !SUBMITTABLE.includes(object.kind)) {
-      issues.add("kind", `must be one of ${SUBMITTABLE.join(", ")}`);
+      issues.add(`${prefix}kind`, `must be one of ${SUBMITTABLE.join(", ")}`);
     } else kind = object.kind as WagerTransactionKind;
   }
 
-  const money = object && "money" in object ? parseMoney(object.money, "money", issues) : undefined;
+  const money = object && "money" in object ? parseMoney(object.money, `${prefix}money`, issues) : undefined;
   if (kind && money?.isZero() && kind !== WagerTransactionKind.Loss) {
-    issues.add("money", `must be greater than zero for a ${kind}`);
+    issues.add(`${prefix}money`, `must be greater than zero for a ${kind}`);
   }
 
   const reference = get("referenceExternalTransactionId");
   const referenceExternalTransactionId =
-    reference === undefined ? undefined : parseText(reference, "referenceExternalTransactionId", issues);
+    reference === undefined
+      ? undefined
+      : parseText(reference, `${prefix}referenceExternalTransactionId`, issues);
   if (kind === WagerTransactionKind.Refund || kind === WagerTransactionKind.Rollback) {
-    if (reference === undefined) issues.add("referenceExternalTransactionId", `is required for a ${kind}`);
+    if (reference === undefined)
+      issues.add(`${prefix}referenceExternalTransactionId`, `is required for a ${kind}`);
   } else if (kind === WagerTransactionKind.Bet && reference !== undefined) {
-    issues.add("referenceExternalTransactionId", "is not allowed for a BET");
+    issues.add(`${prefix}referenceExternalTransactionId`, "is not allowed for a BET");
   }
   if (
     referenceExternalTransactionId !== undefined &&
     referenceExternalTransactionId === externalTransactionId
   ) {
-    issues.add("referenceExternalTransactionId", "cannot be the transaction itself");
+    issues.add(`${prefix}referenceExternalTransactionId`, "cannot be the transaction itself");
   }
 
-  issues.throwIfAny();
   return {
-    idempotencyKey: idempotencyKey as string,
     providerId: providerId as string,
     externalTransactionId: externalTransactionId as string,
     playerId: playerId as string,
