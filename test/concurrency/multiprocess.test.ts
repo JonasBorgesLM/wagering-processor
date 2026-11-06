@@ -118,6 +118,16 @@ async function eventsOf(wallets: Wallet[]): Promise<string[]> {
   return (await drainEvents()).filter((event) => mine.has(event.aggregateId)).map((event) => event.eventId);
 }
 
+/** The error lines the processes wrote, so a failure that says "500" can say why. */
+const errorsOf = (processes: ClusterProcess[]): string[] =>
+  processes.flatMap((proc) =>
+    proc
+      .output()
+      .split("\n")
+      .filter((line) => line.includes('"level":"error"') || line.includes('"level":"fatal"'))
+      .map((line) => line.slice(0, 600)),
+  );
+
 const roundRobin = <T>(items: T[], index: number): T => items[index % items.length] as T;
 
 /** The first column of the first row of a counting query. */
@@ -203,7 +213,13 @@ describe("3. different wallets at once, through three processes", () => {
     const seen = await Promise.all(
       replies.map(async (reply) => `${reply.status} ${JSON.stringify(await reply.json())}`),
     );
-    expect(seen.filter((answer) => !answer.startsWith("200 "))).toEqual([]);
+    expect({
+      refused: seen.filter((answer) => !answer.startsWith("200 ")),
+      logged: errorsOf(processes),
+    }).toEqual({
+      refused: [],
+      logged: [],
+    });
     for (const wallet of wallets) {
       expect(await world.walletState(wallet.walletId)).toEqual({ balance: "70.00", version: 4 });
     }
@@ -548,7 +564,13 @@ describe("8. every process killed, then restarted", () => {
       const answers = await Promise.all(
         replies.map(async (reply) => `${reply.status} ${JSON.stringify(await reply.json())}`),
       );
-      expect(answers.filter((answer) => !answer.startsWith("200 "))).toEqual([]);
+      expect({
+        refused: answers.filter((answer) => !answer.startsWith("200 ")),
+        logged: errorsOf(second),
+      }).toEqual({
+        refused: [],
+        logged: [],
+      });
 
       for (const wallet of wallets) {
         expect(await world.walletState(wallet.walletId)).toEqual({ balance: "70.00", version: 4 });
