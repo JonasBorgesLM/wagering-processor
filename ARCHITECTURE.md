@@ -332,6 +332,17 @@ A duplicate is stopped at several independent layers, so no single one has to be
 - **Eventual outside it:** events arrive after commit, at least once, and may reorder, so they carry `walletVersion`.
 - **Detected, not assumed:** reconciliation compares the balance with the ledger and never corrects it (FR-72).
 
+### Reconciliation
+
+`ReconcileWallet` reads a `LedgerSnapshot` through `ReconciliationReader` and tells a `DivergenceReporter`. The reader is one SQL statement: the wallet row and every entry of the wallet in the same snapshot, with the sum of credits, the sum of debits, the count, and the entries that fail a check, found with a window function (`lag(balance_after)`). It takes no lock.
+
+- **One statement is the consistency.** Reading the balance and then the ledger in two statements shows a balance the ledger has not caught up with whenever a settlement commits between them, and reports a divergence that is only a race. A test commits 80 bets while 60 checks run, and a variant with two reads fails it.
+- **No lock, so it cannot hurt settlement,** and it is not a guard on it: a check that took the wallet lock would make an operator's curiosity a cause of latency on the wallet that matters most.
+- **Never corrects.** Correcting would be deciding which of two numbers is the lie. A divergence is made visible three ways: in the response, as an error in the log naming the wallet, and in `wagering_reconciliations_total{result="divergent"}`. The counter has no wallet label (unbounded), and its `divergent` series exists from the start at zero, so an alert on its rate is never about an absent series.
+- **What can actually diverge.** The schema refuses an entry that does not add up, an out-of-order version, an update or delete of the ledger, and a negative balance. Reconciliation therefore sees a wrong *balance* (an `UPDATE wallets` that bypassed the use case, a bug that saved without appending) as a difference, and a wrong *entry* only when someone removed a defence. The tests remove them on purpose (a trigger and a constraint dropped and restored afterwards), to show the check notices.
+- **Cost.** It scans the wallet's whole ledger, a range scan on `uq_ledger_wallet_version`, bounded by the statement timeout. A wallet with millions of entries would want a checkpointed incremental check; that is not built, and not measured.
+- **Not covered.** It does not compare the ledger with the transactions table (that an entry's amount equals its transaction's holds because both are written in one use case), and it detects nothing a superuser alters consistently (T-09).
+
 ### Resilience
 
 | Failure | Response | Reference |
@@ -408,6 +419,6 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 4 | SQS consumer, inbox, DLQ, shutdown | Consumer and inbox done (#15); backoff and DLQ done (#16); consumer shutdown done (#17) |
 | 5 | Outbox and publisher | Done (#18) |
 | 6 | Out-of-order references worker | Done (#19) |
-| 7 | Reconciliation and observability | Not started |
+| 7 | Reconciliation and observability | Reconciliation done (#20); metrics and logs (#21) not started |
 | 8 | Multi-process failure suite (challenge §13) | Not started |
 | 9 | Final documents, optional load test, release | Not started |
