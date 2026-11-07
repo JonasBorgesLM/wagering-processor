@@ -74,7 +74,7 @@ queue ───SQS────▶ [ consumer ]┘                          │
 ### T-06 — Impersonating a provider
 **Actor:** any HTTP caller. **Impact:** forged bets, wins and reversals.
 **Mitigation:** SR-03 records this as accepted; none in code.
-**Residual:** full. This is the largest open risk, and the system must not be exposed publicly as it stands.
+**Residual:** full. This is the largest open risk, and the system must not be exposed publicly as it stands. It includes `POST /wallets`, which opens a wallet with any initial balance up to the column's limit: without authentication, anyone who reaches the API can create money in the books.
 
 ### T-07 — Reading another player's data
 **Actor:** any HTTP caller. **Impact:** disclosure of balances and history.
@@ -111,6 +111,21 @@ queue ───SQS────▶ [ consumer ]┘                          │
 **Mitigation:** NFR-10.
 **Residual:** a pinned version can already be malicious. The audit covers only known advisories.
 
+### T-14 — Event delivery falls behind
+**Actor:** sustained traffic. **Impact:** downstream systems see settled operations late, for as long as the load lasts.
+**Mitigation:** none of capacity; FR-91 keeps every event and `wagering_outbox_lag_seconds` makes the delay visible.
+**Residual:** measured in the load test: three publishers send about 130 events per second while settlement can produce about 900, so above roughly 65 bets per second sustained the lag grows without bound. Nothing is lost or duplicated. Batching the sends is the fix, not done.
+
+### T-15 — Unbounded storage growth
+**Actor:** time. **Impact:** `inbox_messages` and `outbox_messages` grow with every message and event, and nothing deletes them; on a long-running system the disk fills.
+**Mitigation:** none in code. ARCHITECTURE.md (Operating it) says which rows are safe to delete and why.
+**Residual:** full until a retention job exists.
+
+### T-16 — An expensive read used as a lever
+**Actor:** any HTTP caller. **Impact:** `POST /wallets/:walletId/reconciliation` reads a wallet's whole ledger in one statement; a few concurrent calls on a large wallet hold pooled connections for up to the statement timeout (5 s) and delay settlement on the same process.
+**Mitigation:** the statement timeout bounds each call, and the read takes no lock, so it cannot block a wallet directly.
+**Residual:** no rate limit and no authentication (SR-03). The ledger page is bounded (200 entries) and is not a lever; the reconciliation is.
+
 ## 5. Coverage matrix
 
 | Threat | Requirements |
@@ -128,6 +143,9 @@ queue ───SQS────▶ [ consumer ]┘                          │
 | T-11 | FR-60, FR-64, FR-74, SR-04 |
 | T-12 | FR-53, FR-54 |
 | T-13 | NFR-10 |
+| T-14 | FR-91, NFR-06 |
+| T-15 | none |
+| T-16 | FR-71, NFR-11 |
 
 SR-02 is hardening: it keeps T-05 true on the queue path.
 
@@ -143,12 +161,14 @@ What each mitigation is tested by, and whether the protection was removed to see
 | T-04 double reversal | `schema.test.ts` (names the constraint that refused the row), `domain/settlement-policy.test.ts`, `reference-worker.test.ts` | not removed; the schema test asserts which constraint refuses |
 | T-05 another player's wallet | `domain/settlement-policy.test.ts`, `http-transactions.test.ts` (`PLAYER_WALLET_MISMATCH`, no balance in the answer) | each pair of adjacent checks swapped |
 | T-06, T-07 | none: not mitigated | not applicable |
-| T-08 sensitive values in logs | `integration/logging.test.ts`, `unit/json-logger.test.ts` | a payload value put in the log message text (the allowlist cannot see it, so only the test catches it) |
+| T-08 sensitive values in logs | `integration/logging.test.ts` (HTTP, queue success and queue failure, reference worker), `unit/json-logger.test.ts`, `unit/messaging/describe-for-log.test.ts` | a payload value put in the log message text (the allowlist cannot see it, so only the test catches it); the consumer logging an error's message instead of its code |
 | T-09 ledger tampering | `schema.test.ts` (append-only triggers), `reconciliation.test.ts` (with the trigger and the arithmetic constraint removed on purpose) | the chain check, the arithmetic check, the sign of the difference, the lock |
 | T-10 poison message | `consumer-failures.test.ts` (each permanent failure, attempts exhausted, PostgreSQL really stopped) | permanent retried instead of dead-lettered; attempts never exhausted; DLQ failure ignored |
 | T-11 exhaustion | `http-transactions.test.ts` (a burst larger than the pool), `settlement.test.ts` (the pool and the terminated connection), body-limit tests | the connection errors were found by the failure suite on a slow runner and fixed |
 | T-12 key squatting | `settlement.test.ts`, `http-transactions.test.ts` (the conflicts) | the idempotency lookup |
-| T-13 dependency | `bun audit` and the frozen lockfile in CI | not applicable |
+| T-13 dependency | `bun audit` and the frozen lockfile in CI; images pinned by digest | not applicable |
+| T-14 delivery behind | `bun run test:load` (measured, not asserted) | not applicable: a measurement |
+| T-15, T-16 | none: not mitigated | not applicable |
 
 ## 7. Explicitly not addressed
 

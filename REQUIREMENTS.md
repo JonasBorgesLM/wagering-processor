@@ -326,7 +326,7 @@ Every event is stored in the outbox and published as this envelope. `eventType` 
 
 ## 4. Security requirements
 
-- **SR-01** Logs carry correlation ids and no sensitive data or full financial payloads (§12). The logger writes only an allowlist of fields (`correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`, `failureCode`, `status`, `durationMs`, `error`), so a field nobody thought of cannot leak. A log message is a fixed sentence and never built from request data. A refused request logs its code, not its message.
+- **SR-01** Logs carry correlation ids and no sensitive data or full financial payloads (§12). The logger writes only an allowlist of fields (`correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`, `failureCode`, `status`, `durationMs`, `error`), so a field nobody thought of cannot leak. A log message is a fixed sentence and never built from request data. A refused request, over HTTP or from the queue, logs its code and not its message, because the message names what the sender sent; the DLQ keeps the full reason next to the body.
 - **SR-02** Every provider field from the queue passes the same domain validation as HTTP (§2).
 - **SR-03** Without authentication, any caller can act as any provider. This is accepted by §2 and is **not** mitigated by anything else here; the extension point and intended design are in [ADR-0009](docs/adr/0009-authentication-is-a-documented-extension-point.md).
 - **SR-04** Input is bounded: request body size, `Idempotency-Key` and identifier lengths, ledger page size. No unbounded value reaches a query, an index or a log.
