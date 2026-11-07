@@ -19,7 +19,7 @@ Parameters (environment): `LOAD_DURATION_S` (20), `LOAD_WARMUP_S` (3), `LOAD_CON
 | Runtime | Bun 1.4.4; three application processes, each with every role (`api`, `consumer`, `publisher`, `reference-worker`) |
 | Services | PostgreSQL 18 and the MiniStack SQS emulator in Docker on the same machine (Docker VM: 8 CPUs, 4 GB) |
 | Load generator | The same machine, the same cores, a Bun script |
-| Configuration | The shipped defaults: lock timeout 2 s, statement timeout 5 s, pool of 10 per process, 1 s to get a connection, outbox batch of 25 polled every 500 ms |
+| Configuration | The shipped defaults at the time of each run: lock timeout 2 s, statement timeout 5 s, pool of 10 per process, 1 s to get a connection, outbox batch of 25 (100 after #51) polled every 500 ms |
 
 The generator, the three processes and the database share eight cores, so none of the numbers below is the capacity of the application alone, and **this run does not say which component was the limit** on the spread scenario: no CPU profile was taken.
 
@@ -64,7 +64,43 @@ One more run, hot wallet at 256 callers instead of 64: 207 bets per second, p50 
 
 **At 256 callers it is the pool, not the lock, that sheds.** The 3.1 % of `503` came with zero lock timeouts: 85 callers per process against a pool of 10 and a 1 s wait for a connection means some give up before reaching the lock. That is the behaviour ADR-0003 and T-11 describe, observed.
 
-**Publishing is the bottleneck, by a wide margin, and this is the finding that matters.** The publishers emptied the backlog at 125 to 138 events per second in total (about 40 per publisher), while settlement produced about 2 events per bet, or roughly 900 per second at the spread rate. During the load almost nothing was published: the lag at the end is about the length of the run, and 97 % of the events of the spread scenario were still waiting (72 to 75 % on the hot wallet, where fewer were produced). That is roughly 25 events per second published while settling, a fifth of the drain rate, so the publishers also compete for the same cores and connections while the load runs; that is read from the numbers, not profiled. The outbox is correct (it never lost or duplicated an event) and it is **behind by design of its batch**: each publisher sends one message at a time, which at the observed rate is roughly 23 ms each against the emulator, so three of them top out near 130 per second. **A sustained rate above about 65 bets per second on this machine makes the lag grow without bound** until the load stops. The cause is read from the rate and not profiled. The obvious levers are `SendMessageBatch` (ten per call) and sending different wallets' events in parallel, both of which keep a wallet's order; neither is done.
+**Publishing is the bottleneck, by a wide margin, and this is the finding that matters. (Measured before issue #51; see "After batching" below for what changed.)** The publishers emptied the backlog at 125 to 138 events per second in total (about 40 per publisher), while settlement produced about 2 events per bet, or roughly 900 per second at the spread rate. During the load almost nothing was published: the lag at the end is about the length of the run, and 97 % of the events of the spread scenario were still waiting (72 to 75 % on the hot wallet, where fewer were produced). That is roughly 25 events per second published while settling, a fifth of the drain rate, so the publishers also compete for the same cores and connections while the load runs; that is read from the numbers, not profiled. The outbox is correct (it never lost or duplicated an event) and it is **behind by design of its batch**: each publisher sends one message at a time, which at the observed rate is roughly 23 ms each against the emulator, so three of them top out near 130 per second. **A sustained rate above about 65 bets per second on this machine makes the lag grow without bound** until the load stops. The cause is read from the rate and not profiled. The obvious levers are `SendMessageBatch` (ten per call) and sending different wallets' events in parallel, both of which keep a wallet's order; neither is done.
+
+## After batching the sends (issue #51)
+
+The publishers were changed to claim 100 rows a round (it was 25) and send them ten to a call with `SendMessageBatch`, over a configurable number of lanes (`OUTBOX_PUBLISH_CONCURRENCY`), keeping each wallet's events in one lane and in order. The same test, the same machine, three runs each:
+
+| | Before (25 rows, one message a call) | 100 rows, ten to a call, **1 lane** (the default) | 100 rows, ten to a call, 4 lanes |
+| --- | --- | --- | --- |
+| Spread, bets per second | 461, 497, 447 | 465, 398, 454 | 393, 418, 413 |
+| Spread, p50 / p99 (ms) | 119-127 / 298-430 | 124-130 / 280-646 | 139-142 / 339-453 |
+| Hot wallet, bets per second | 152, 144, 142 | 120, 132, 130 | 115, 117, 121 |
+| Hot wallet, p50 (ms) | 77, 46, 50 | 57, 42, 68 | **604, 115, 600** |
+| Events unpublished when the load stopped (spread) | 21294, 21998, 20307 | 19604, 18314, 20600 | 13156, 18232, 18496 |
+| Seconds to publish that backlog (spread) | 154, 177, 161 | 78, 136, 145 | 30, 112, 134 |
+| Hot wallet at 256 callers: `503` | 139 of 4486 | not run | 1185 of 3762 |
+| Books balance afterwards | yes | yes | yes |
+
+**It did not make the publishers keep up.** Settlement still produces about 900 events per second at the spread rate and the publishers still empty the backlog at about 130 to 250 per second, so the lag still grows through a sustained load, and a backlog of about 20,000 events still takes one to three minutes to clear. The drain rate varies a good deal between runs, more than the figures of settlement do.
+
+**Why, measured on its own** (a throwaway probe, not committed: the publisher over a backlog of 6,000 events with nothing else running, and the broker alone):
+
+| | |
+| --- | --- |
+| One `SendMessage` to the emulator | 14.4 ms |
+| One call with ten messages | 62.5 ms, so 6.3 ms a message |
+| Four lanes of ten-message calls at once | 168 messages per second in all, and each call took about four times as long as when alone |
+| Publisher, 25 rows, one at a time (before) | 137 events per second |
+| Publisher, 100 rows, ten a call, 1 lane | 185 per second |
+| Publisher, 100 rows, ten a call, 4 lanes | 230 per second |
+| Publisher, 250 rows, ten a call, 8 lanes | 300 per second |
+| Share of the time spent claiming and marking | under 5 % in every configuration |
+
+So batching and lanes did what they were meant to: from 137 to as much as 300 events per second for a publisher alone. But **the emulator serializes requests**: calls made at the same time take proportionally longer, so more lanes buy little and the broker, not the database or the code, is the ceiling here. Claiming and marking cost almost nothing.
+
+**More lanes hurt settlement on this machine.** The publishers are faster with more lanes and spend the cores that settlement needs: the hot wallet's p50 went from about 50 ms to about 600 ms in two of three runs, and the `503` of the 256-caller run went from 139 to 1185. With one lane the settlement figures are back to near where they were. That is why the default is one lane, and why the lanes stay as a setting: where the broker is real and the publishers run on their own hosts the trade is different, and this experiment cannot show it.
+
+**What is therefore still true:** a sustained rate above roughly 65 to 125 bets per second makes the outbox lag grow until the load stops, on this machine and this emulator. Whether real SQS lifts that was not measured.
 
 ## What this does not show
 

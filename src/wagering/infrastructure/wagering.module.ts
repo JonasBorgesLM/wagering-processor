@@ -193,6 +193,7 @@ export class WageringModule {
                     clock,
                     {
                       batchSize: config.outboxBatchSize,
+                      concurrency: config.outboxPublishConcurrency,
                       leaseMs: config.outboxLeaseMs,
                       retryDelayMs: (attempts) =>
                         1000 *
