@@ -139,7 +139,8 @@ All through environment variables; `.env.example` has the defaults and a bad val
 | `DATABASE_POOL_MAX`, `DATABASE_ACQUIRE_TIMEOUT_MS` | 10, 1000 | connections per process; the wait to get or open one |
 | `QUEUE_WAIT_SECONDS` | 5 | one poll of the input queue, and so the longest stopping the consumer can take |
 | `QUEUE_BACKOFF_BASE_SECONDS`, `QUEUE_BACKOFF_CAP_SECONDS` | 2, 30 | the wait before a failed message is delivered again |
-| `OUTBOX_POLL_INTERVAL_MS`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE_MS` | 500, 25, 30000 | how the publisher polls, claims and how long a claim is held |
+| `OUTBOX_POLL_INTERVAL_MS`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE_MS` | 500, 100, 30000 | how the publisher polls, how many rows it claims a round (sent ten to a call) and how long a claim is held |
+| `OUTBOX_PUBLISH_CONCURRENCY` | 1 | calls to the broker in flight at once per publisher, up to 32; a wallet's events always go through one lane. Raise it where the broker is real: against the emulator more lanes cost settlement latency |
 | `OUTBOX_RETRY_BASE_SECONDS`, `OUTBOX_RETRY_CAP_SECONDS` | 1, 60 | the wait before a failed publication is tried again (no attempt limit) |
 | `REFERENCE_TTL_SECONDS` | 3600 | how long a reversal waits for its reference |
 | `REFERENCE_RETRY_BASE_SECONDS`, `REFERENCE_RETRY_CAP_SECONDS` | 5, 300 | the wait between looks at a waiting reversal |
@@ -256,7 +257,7 @@ Every required test runs against **real PostgreSQL and a real SQS emulator**, wi
 ## Known limitations
 
 - **No authentication** (ADR-0009, T-06). Anyone who reaches the API can act as any provider, and can open a wallet with any balance. **Do not expose it.**
-- **Event publishing is the slowest part, by a wide margin.** On the reference machine the publishers send about 130 events per second while settlement can produce about 900, so **a sustained rate above roughly 65 bets per second grows the outbox lag without bound** until the load stops. Nothing is lost or duplicated; consumers fall behind. Batching the sends is the fix, and is not done ([`docs/LOAD-TEST.md`](docs/LOAD-TEST.md)).
+- **Event publishing is the slowest part, by a wide margin.** On the reference machine the publishers send about 130 to 250 events per second while settlement can produce about 900, so **a sustained rate above roughly 65 to 125 bets per second grows the outbox lag without bound** until the load stops. Nothing is lost or duplicated; consumers fall behind. The sends are batched (ten to a call), which lifted a publisher alone from 137 to 185 events per second, but the local broker emulator handles requests one after another and is the ceiling; real SQS was not measured ([`docs/LOAD-TEST.md`](docs/LOAD-TEST.md)).
 - **Capacity is a short, single-machine measurement:** about 470 bets per second over many wallets and about 145 on one wallet, in 20-second runs on a laptop with the generator on the same cores. Sustained load, a real network and AWS were not measured.
 - **A database outage longer than about 30 s dead-letters the messages in flight** with the default retry settings. Replaying them is safe and manual ([how](ARCHITECTURE.md#replaying-the-dead-letter-queue)).
 - **Nothing is ever deleted:** the inbox and the outbox grow with traffic. Which rows are safe to remove is in [ARCHITECTURE.md](ARCHITECTURE.md#data-retention); the job is not built.

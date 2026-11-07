@@ -114,7 +114,7 @@ queue ───SQS────▶ [ consumer ]┘                          │
 ### T-14 — Event delivery falls behind
 **Actor:** sustained traffic. **Impact:** downstream systems see settled operations late, for as long as the load lasts.
 **Mitigation:** none of capacity; FR-91 keeps every event and `wagering_outbox_lag_seconds` makes the delay visible.
-**Residual:** measured in the load test: three publishers send about 130 events per second while settlement can produce about 900, so above roughly 65 bets per second sustained the lag grows without bound. Nothing is lost or duplicated. Batching the sends is the fix, not done.
+**Residual:** measured in the load test: three publishers send about 130 to 250 events per second while settlement can produce about 900, so above roughly 65 to 125 bets per second sustained the lag grows without bound. Nothing is lost or duplicated. The sends are batched (ten to a call), and the local emulator, which handles requests one after another, is the ceiling; real SQS was not measured.
 
 ### T-15 — Unbounded storage growth
 **Actor:** time. **Impact:** `inbox_messages` and `outbox_messages` grow with every message and event, and nothing deletes them; on a long-running system the disk fills.

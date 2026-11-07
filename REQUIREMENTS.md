@@ -293,7 +293,7 @@ Checks run under the wallet lock, in this order, so the same input always gets t
 
 - **FR-90** Events are written in the same SQL transaction as the state change and published only by the outbox worker, to a dedicated queue `wagering-events.fifo` (`INT-19`).
 - **FR-95** A publisher claims due rows with a lease in one statement (`FOR UPDATE SKIP LOCKED`), publishes outside any transaction and marks them published. Two publishers never claim the same row while its lease holds, and a publisher that dies delays its rows by at most one lease (`OUTBOX_LEASE_MS`). The `publisher` role runs it.
-- **FR-96** When publishing fails, the failed row and the unattempted rest of the batch are rescheduled with an exponential, jittered backoff and the round ends. Rows are never given up on, and a publication is bounded by a timeout (`NFR-11`).
+- **FR-96** A round claims up to `OUTBOX_BATCH_SIZE` rows and sends them ten to a call over `OUTBOX_PUBLISH_CONCURRENCY` lanes; a wallet's events are in one lane, in the order they were claimed, so two of them are never in flight together. When the broker refuses an event, it is put back with an exponential, jittered backoff, and so are the same wallet's events in the later calls of the lane. When a call fails as a whole, its entries and the rest of its lane are put back and the other lanes go on. Rows are never given up on, and a call is bounded by a timeout (`NFR-11`).
 - **FR-91** Publication is at-least-once, with no attempt limit. `eventId` is the consumer's dedup key. `walletVersion` lets consumers restore balance order, since retries can reorder events.
 
 #### 3.12.1 Event contract, version 1

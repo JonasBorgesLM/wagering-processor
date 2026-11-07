@@ -54,30 +54,36 @@ export class MikroOrmOutboxStore implements OutboxStore {
       }));
   }
 
-  async markPublished(id: string, at: Date): Promise<void> {
+  async markPublished(ids: readonly string[], at: Date): Promise<void> {
+    if (ids.length === 0) return;
     // Only while unpublished: if the lease ran out and another publisher got there first, this changes nothing.
     await boundedTransaction(this.orm, this.options, (em) =>
       em
         .getConnection()
         .execute(
-          "update outbox_messages set published_at = ? where id = ? and published_at is null",
-          [at, id],
+          "update outbox_messages set published_at = ? where id = any(?::uuid[]) and published_at is null",
+          [at, `{${ids.join(",")}}`],
           "run",
           em.getTransactionContext(),
         ),
     );
   }
 
-  async reschedule(id: string, nextAttemptAt: Date): Promise<void> {
+  async reschedule(items: ReadonlyArray<{ id: string; nextAttemptAt: Date }>): Promise<void> {
+    if (items.length === 0) return;
+    // Each row at its own time, in one statement; a row published in the meantime is left alone.
     await boundedTransaction(this.orm, this.options, (em) =>
-      em
-        .getConnection()
-        .execute(
-          "update outbox_messages set next_attempt_at = ? where id = ? and published_at is null",
-          [nextAttemptAt, id],
-          "run",
-          em.getTransactionContext(),
-        ),
+      em.getConnection().execute(
+        `update outbox_messages o set next_attempt_at = t.at
+             from unnest(?::uuid[], ?::timestamptz[]) as t(id, at)
+            where o.id = t.id and o.published_at is null`,
+        [
+          `{${items.map((item) => item.id).join(",")}}`,
+          `{${items.map((item) => `"${item.nextAttemptAt.toISOString()}"`).join(",")}}`,
+        ],
+        "run",
+        em.getTransactionContext(),
+      ),
     );
   }
 }

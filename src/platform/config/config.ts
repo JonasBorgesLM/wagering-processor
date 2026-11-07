@@ -33,8 +33,14 @@ export interface AppConfig {
   readonly queueBackoffCapSeconds: number;
   /** How long a publisher sleeps when the outbox has nothing due. */
   readonly outboxPollIntervalMs: number;
-  /** Rows one publisher claims per round. */
+  /** Rows one publisher claims per round, sent over `outboxPublishConcurrency` lanes ten to a call. */
   readonly outboxBatchSize: number;
+  /**
+   * How many calls to the broker one publisher has in flight at once; a wallet is always in one lane. 1 by default:
+   * on one machine with the emulator, which handles requests one after another, more lanes raised the publish rate
+   * of a publisher alone and took settlement latency with it (docs/LOAD-TEST.md). Raise it where the broker is real.
+   */
+  readonly outboxPublishConcurrency: number;
   /** How long a claimed row is invisible to other publishers. A publisher that dies delays its rows by this much. */
   readonly outboxLeaseMs: number;
   /** A failed publication waits about this long, doubling per attempt up to the cap. There is no attempt limit. */
@@ -72,7 +78,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     queueBackoffBaseSeconds: positiveInteger(env, "QUEUE_BACKOFF_BASE_SECONDS", 2),
     queueBackoffCapSeconds: boundedInteger(env, "QUEUE_BACKOFF_CAP_SECONDS", 30, 43_200),
     outboxPollIntervalMs: positiveInteger(env, "OUTBOX_POLL_INTERVAL_MS", 500),
-    outboxBatchSize: boundedInteger(env, "OUTBOX_BATCH_SIZE", 25, 1_000),
+    outboxBatchSize: boundedInteger(env, "OUTBOX_BATCH_SIZE", 100, 1_000),
+    outboxPublishConcurrency: boundedInteger(env, "OUTBOX_PUBLISH_CONCURRENCY", 1, 32),
     outboxLeaseMs: positiveInteger(env, "OUTBOX_LEASE_MS", 30_000),
     outboxRetryBaseSeconds: positiveInteger(env, "OUTBOX_RETRY_BASE_SECONDS", 1),
     outboxRetryCapSeconds: boundedInteger(env, "OUTBOX_RETRY_CAP_SECONDS", 60, 3_600),

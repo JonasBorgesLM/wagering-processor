@@ -1,6 +1,6 @@
-import { GetQueueUrlCommand, SendMessageCommand, type SQSClient } from "@aws-sdk/client-sqs";
+import { GetQueueUrlCommand, SendMessageBatchCommand, type SQSClient } from "@aws-sdk/client-sqs";
 import { QUEUES } from "../../../platform/config/config";
-import type { EventPublisher, OutboxEntry } from "../../application/ports";
+import type { EventPublisher, OutboxEntry, PublishBatchResult } from "../../application/ports";
 
 /** Every call to the broker is bounded (NFR-11); a publisher that waits forever holds its batch's leases hostage. */
 const SEND_TIMEOUT_MS = 5_000;
@@ -16,17 +16,30 @@ export class SqsEventPublisher implements EventPublisher {
 
   constructor(private readonly sqs: SQSClient) {}
 
-  async publish(entry: OutboxEntry): Promise<void> {
+  async publishBatch(entries: readonly OutboxEntry[]): Promise<PublishBatchResult> {
     const queueUrl = await this.resolveQueue();
-    await this.sqs.send(
-      new SendMessageCommand({
+    const answer = await this.sqs.send(
+      new SendMessageBatchCommand({
         QueueUrl: queueUrl,
-        MessageBody: JSON.stringify(entry.payload),
-        MessageGroupId: entry.aggregateId,
-        MessageDeduplicationId: entry.id,
+        // Within a call the broker keeps the order of the entries per group, so a wallet's events keep theirs.
+        Entries: entries.map((entry) => ({
+          Id: entry.id,
+          MessageBody: JSON.stringify(entry.payload),
+          MessageGroupId: entry.aggregateId,
+          MessageDeduplicationId: entry.id,
+        })),
       }),
       { abortSignal: AbortSignal.timeout(SEND_TIMEOUT_MS) },
     );
+    return {
+      accepted: (answer.Successful ?? []).map((sent) => sent.Id as string),
+      rejected: (answer.Failed ?? []).map((failed) => ({
+        id: failed.Id as string,
+        error: new Error(
+          `${failed.Code ?? "SendFailed"}: ${failed.Message ?? "the broker refused the message"}`,
+        ),
+      })),
+    };
   }
 
   private async resolveQueue(): Promise<string> {
