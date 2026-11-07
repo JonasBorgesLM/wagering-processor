@@ -265,6 +265,8 @@ Outcomes are in REQUIREMENTS section 3.11. `classifyFailure` is a pure function:
 
 ## HTTP API
 
+The contract in machine-readable form is `docs/openapi.yaml` (OpenAPI 3.1). It is not generated from the code, which would make it true by construction and hide a wrong status; it is written by hand and checked against the running application by `test/integration/openapi.test.ts`: the set of routes, the examples against their schemas, and each real answer (every status that can be provoked without breaking a dependency) against the schema declared for it. The `503` and `500` responses need a failing dependency and are asserted in the suites that break one. The spec also validates under kin-openapi, the library the security scanner uses to import it.
+
 Implemented: the wallet endpoints, `POST /wagering/transactions`, and the two reads of a transaction (`GET /wagering/transactions/:transactionId` and `GET /providers/:providerId/wagering/transactions/:externalTransactionId`).
 
 - **Controllers are thin:** parse, call one use case, shape the answer. Parsing is by hand and collects every problem before refusing, so a provider fixes a request in one round trip. There is no validation library, because the shapes are small.
