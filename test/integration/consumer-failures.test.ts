@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { SQSClient } from "@aws-sdk/client-sqs";
+import { databaseProbe } from "../../src/platform/health/probe";
 import { TransientFailureError } from "../../src/wagering/application/errors";
 import { WagerQueueConsumer } from "../../src/wagering/infrastructure/messaging/wager-queue-consumer";
 import { BrokerProxy } from "../support/broker-proxy";
@@ -22,7 +23,7 @@ import {
 import { TEST_ENV } from "../support/env";
 import { SettlementWorld } from "../support/settlement";
 
-// Requirements: FR-82, FR-83, NFR-11.
+// Requirements: FR-82, FR-83, FR-101, NFR-11.
 // What the consumer does with a message it could not settle (section 3.11, NFR-11), against the real broker, and
 // for the transient case against a PostgreSQL that is really stopped.
 
@@ -298,4 +299,60 @@ describe("with PostgreSQL really stopped", () => {
       await consumer.beforeApplicationShutdown();
     }
   }, 60_000);
+
+  // Issue #52. Without the gate, five deliveries at these backoffs are spent in about ten seconds, well inside a
+  // twenty-second outage, and the message would be in the DLQ.
+  test("it receives nothing while PostgreSQL is away: no delivery is spent and nothing is dead-lettered (FR-101)", async () => {
+    const wallet = await world.openWallet("100.00");
+    const real = spyOnUseCase();
+    const policy = { ...FAST, databaseIsUp: databaseProbe(world.orm) };
+    const consumer = started(new WagerQueueConsumer(sqs, real.useCase, policy));
+    try {
+      await compose("stop", "postgres");
+      await send(message(wallet), wallet.walletId);
+      await eventually(async () => (await depth()).inFlight + (await depth()).visible === 1, "the message");
+      await Bun.sleep(20_000);
+      // At most the delivery that was already in flight when the database went away; then the consumer stopped asking.
+      expect(real.calls()).toBeLessThanOrEqual(1);
+      expect(real.results).toEqual([]);
+      expect((await depth(deadLetterUrl)).visible).toBe(0);
+    } finally {
+      await compose("up", "-d", "--wait", "postgres");
+    }
+    try {
+      await eventually(
+        () => real.results.length === 1,
+        "the message to settle once PostgreSQL is back",
+        25_000,
+      );
+      await eventually(queueIsEmpty, "the acknowledgement");
+      expect(real.results[0]).toMatchObject({ status: "PROCESSED", idempotentReplay: false });
+      expect(await world.walletState(wallet.walletId)).toEqual({ balance: "20.00", version: 2 });
+      expect(await world.counts(wallet.walletId)).toEqual({ transactions: 1, entries: 1, events: 2 });
+      expect((await depth(deadLetterUrl)).visible).toBe(0);
+    } finally {
+      await compose("up", "-d", "--wait", "postgres");
+      await consumer.beforeApplicationShutdown();
+    }
+  }, 90_000);
+});
+
+describe("a probe that says up does not exempt a failing message (issue #52)", () => {
+  test("settlement keeps failing while the database answers: the delivery limit still ends in the DLQ", async () => {
+    const wallet = await world.openWallet("100.00");
+    const { useCase, calls } = spyOnUseCase(() => {
+      throw new TransientFailureError("settlement fails while the probe says up");
+    });
+    const consumer = started(
+      new WagerQueueConsumer(sqs, useCase, { ...FAST, databaseIsUp: async () => "up" }),
+    );
+    try {
+      await send(message(wallet), wallet.walletId);
+      await eventually(async () => (await depth(deadLetterUrl)).visible === 1, "the DLQ", 30_000);
+      expect(calls()).toBe(FAST.maxReceives);
+      expect((await readDeadLetters())[0]?.kind).toBe("attempts-exhausted");
+    } finally {
+      await consumer.beforeApplicationShutdown();
+    }
+  }, 45_000);
 });

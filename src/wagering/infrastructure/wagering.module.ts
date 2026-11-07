@@ -4,6 +4,7 @@ import { type DynamicModule, Logger, Module } from "@nestjs/common";
 import { Registry } from "prom-client";
 import { type AppConfig, MAX_RECEIVE_COUNT } from "../../platform/config/config";
 import { APP_CONFIG } from "../../platform/config/config.module";
+import { databaseProbe } from "../../platform/health/probe";
 import { DrainState } from "../../platform/lifecycle/drain-state";
 import { PollingWorker } from "../../platform/lifecycle/polling-worker";
 import { MetricsModule } from "../../platform/metrics/metrics.module";
@@ -316,13 +317,14 @@ export class WageringModule {
           ? [
               {
                 provide: WagerQueueConsumer,
-                inject: [SQSClient, SubmitWagerTransaction, APP_CONFIG, DrainState, METRICS],
+                inject: [SQSClient, SubmitWagerTransaction, APP_CONFIG, DrainState, METRICS, MikroORM],
                 useFactory: (
                   sqs: SQSClient,
                   useCase: SubmitWagerTransaction,
                   config: AppConfig,
                   drain: DrainState,
                   metrics: WageringMetrics,
+                  orm: MikroORM,
                 ) =>
                   new WagerQueueConsumer(
                     sqs,
@@ -334,6 +336,7 @@ export class WageringModule {
                         capSeconds: config.queueBackoffCapSeconds,
                       },
                       maxReceives: MAX_RECEIVE_COUNT,
+                      databaseIsUp: databaseProbe(orm),
                     },
                     drain,
                     metrics,
