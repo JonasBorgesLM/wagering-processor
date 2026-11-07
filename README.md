@@ -11,7 +11,7 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)
 ![SQS](https://img.shields.io/badge/SQS-MiniStack-FF9900?logo=amazonsqs&logoColor=white)
 
-Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge) · v1.0.0
+Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge) · v1.1.0
 
 </div>
 
@@ -19,7 +19,7 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 
 Game providers send `BET`, `WIN`, `LOSS`, `REFUND` and `ROLLBACK` operations over HTTP or through an SQS queue. Each one is applied to a player's wallet **exactly once**, however many times it is sent, in whatever order, through whichever instance. Every balance change has its ledger entry, and the stored balance always equals what the ledger rebuilds.
 
-> **Status: v1.0.0.** Everything the challenge asks for is implemented and tested against real PostgreSQL and a real SQS emulator, including a failure suite that kills real processes. What is **not** here is listed under [Known limitations](#known-limitations). Read it before relying on this.
+> **Status: v1.1.0.** Everything the challenge asks for is implemented and tested against real PostgreSQL and a real SQS emulator, including a failure suite that kills real processes. What is **not** here is listed under [Known limitations](#known-limitations). Read it before relying on this.
 
 ## Contents
 
