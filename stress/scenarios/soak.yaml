@@ -1,0 +1,36 @@
+# Soak: 16 concurrent for 10 minutes, in 10 windows.
+#
+# Every request is a BET of 1.00 on ONE wallet: a fresh Idempotency-Key and externalTransactionId per request
+# ({{uuid}} is the same value everywhere inside one request, which is the form the API recommends,
+# provider:externalTransactionId). One wallet is deliberate and it is the worst case: every request queues on the same
+# row lock (ADR-0003). Spreading over many wallets is test:load's job (docs/LOAD-TEST.md); sapper cannot pick a wallet
+# per request (ADR-0010 there).
+#
+# SLOs, written BEFORE the first run (issue #60): the service may shed load with 503 and may be slow, but it must never
+# answer 500, which is a bug or a terminal failure, and it must stay up. Afterwards scripts/stress.sh reconciles the
+# wallet: balance == ledger, which sapper cannot see.
+name: stress-soak
+profile:
+  type: soak
+  concurrency: 16
+  duration: 10m
+  windows: 10
+request:
+  method: POST
+  path: /wagering/transactions
+  headers:
+    Idempotency-Key: "provider-a:{{uuid}}"
+  body:
+    providerId: provider-a
+    externalTransactionId: "{{uuid}}"
+    playerId: 0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1
+    walletId: 0192f291-27dd-7d3f-8071-5f8685deef37
+    roundId: round-stress
+    gameId: fortune-chimp
+    kind: BET
+    money: { amount: "1.00", currency: BRL }
+slos:
+  status_absent: 500
+  status_fraction_under: { status: 503, fraction: 0.01 }
+  error_rate_under: 0.01
+  degradation_under: 2           # last window's p99 within 2x the first's: the ledger of one wallet only grows
