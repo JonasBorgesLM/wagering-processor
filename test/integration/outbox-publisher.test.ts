@@ -213,6 +213,61 @@ describe("several publishers (ADR-0007)", () => {
   }, 60_000);
 });
 
+describe("a publisher does not wait for rows another one is claiming (ADR-0007)", () => {
+  // SKIP LOCKED is not what keeps two publishers off the same row: after waiting on the lock, the second would
+  // re-read the row, find the first one's lease on it and pass it by, and the test above stays green without it
+  // (the mutation run found that). What it buys is that the second does not wait at all, so a slow claim in one
+  // process cannot hold up publishing in the others.
+  test("a claim over rows another transaction holds returns the rest at once", async () => {
+    const wallets = await Promise.all(Array.from({ length: 3 }, () => betOnNewWallet()));
+    const mine = wallets.map((wallet) => wallet.walletId);
+    const [held] = (await world.sql(
+      "select id from outbox_messages where published_at is null and aggregate_id = any(?::uuid[]) order by id limit 1",
+      [`{${mine.join(",")}}`],
+    )) as Array<{ id: string }>;
+    if (!held) throw new Error("no row to hold");
+
+    let holding!: () => void;
+    const isHeld = new Promise<void>((resolve) => {
+      holding = resolve;
+    });
+    let release!: () => void;
+    const mayRelease = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = world.orm.em.transactional(async (em) => {
+      await em
+        .getConnection()
+        .execute(
+          "select id from outbox_messages where id = ? for update",
+          [held.id],
+          "all",
+          em.getTransactionContext(),
+        );
+      holding();
+      await mayRelease;
+    });
+    try {
+      await isHeld;
+      const started = performance.now();
+      const claimed = await realStore().claimDue(100, 60_000, new Date());
+      const took = performance.now() - started;
+      const ids = claimed.map((entry) => entry.id);
+      expect(ids).not.toContain(held.id);
+      // The other five rows of these wallets were free to take.
+      expect(claimed.filter((entry) => mine.includes(entry.aggregateId)).length).toBe(5);
+      expect(took).toBeLessThan(1_000);
+    } finally {
+      release();
+      await holder;
+      // Later tests assume nothing else is due, and this one leaves rows leased or unclaimed.
+      await world.sql("delete from outbox_messages where aggregate_id = any(?::uuid[])", [
+        `{${mine.join(",")}}`,
+      ]);
+    }
+  });
+});
+
 describe("a publisher that dies after the commit and before publishing", () => {
   test("its rows are invisible while the lease holds, and another publisher takes them when it ends", async () => {
     const wallet = await betOnNewWallet();

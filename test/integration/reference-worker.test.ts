@@ -94,6 +94,64 @@ function reversalOf(
   return command(wallet, { kind, money: brl("80.00"), referenceExternalTransactionId });
 }
 
+describe("the worker does not wait for rows another one is claiming (FR-45)", () => {
+  // Like the outbox's claim: without SKIP LOCKED the lease would still keep two workers off one row, because the
+  // second re-reads it after the wait. What SKIP LOCKED buys is that it does not wait (the mutation run found that
+  // nothing noticed it gone).
+  test("a claim over rows another transaction holds returns the rest at once", async () => {
+    const waiting: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const wallet = await world.openWallet("100.00");
+      const reversal = await world.useCase.execute(
+        reversalOf(wallet, Kind.Refund, aBet(wallet).externalTransactionId),
+      );
+      await makeDue(reversal.transactionId);
+      waiting.push(reversal.transactionId);
+    }
+    const heldId = waiting[0] as string;
+
+    let holding!: () => void;
+    const isHeld = new Promise<void>((resolve) => {
+      holding = resolve;
+    });
+    let release!: () => void;
+    const mayRelease = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = world.orm.em.transactional(async (em) => {
+      await em
+        .getConnection()
+        .execute(
+          "select id from wager_transactions where id = ? for update",
+          [heldId],
+          "all",
+          em.getTransactionContext(),
+        );
+      holding();
+      await mayRelease;
+    });
+    try {
+      await isHeld;
+      const started = performance.now();
+      const claimed = await realStore().claimDue(100, 60_000, new Date());
+      const took = performance.now() - started;
+      const ids = claimed.map((row) => row.id);
+      expect(ids).not.toContain(heldId);
+      expect(ids).toContain(waiting[1] as string);
+      expect(ids).toContain(waiting[2] as string);
+      expect(took).toBeLessThan(1_000);
+    } finally {
+      release();
+      await holder;
+      // Later tests assume nothing else is due.
+      await world.sql(
+        "update wager_transactions set next_retry_at = now() + interval '1 day' where id = any(?::uuid[])",
+        [`{${waiting.join(",")}}`],
+      );
+    }
+  });
+});
+
 describe("a reversal that arrives before its bet (section 7.1)", () => {
   test.each([Kind.Refund, Kind.Rollback] as const)(
     "a %s waits, is looked at again, and settles once the bet is there",
