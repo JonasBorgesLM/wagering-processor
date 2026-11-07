@@ -44,4 +44,4 @@ Also added, without a finding asking for it: `Referrer-Policy: no-referrer` (pat
 
 ## Limits
 
-One run, on loopback, against a seeded throwaway database, with the checks warden has today. A scan finds what it looks for; it is not a penetration test, and a clean result on injection means the parameters it reached did not misbehave, not that none can. It does not test denial of service (the stress scenarios of #60 will), authentication, or anything behind a network boundary.
+One run, on loopback, against a seeded throwaway database, with the checks warden has today. A scan finds what it looks for; it is not a penetration test, and a clean result on injection means the parameters it reached did not misbehave, not that none can. It does not test denial of service (see [`STRESS-TEST.md`](STRESS-TEST.md)), authentication, or anything behind a network boundary.

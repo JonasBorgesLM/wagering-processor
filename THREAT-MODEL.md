@@ -174,6 +174,7 @@ What each mitigation is tested by, and whether the protection was removed to see
 | T-12 key squatting | `settlement.test.ts`, `http-transactions.test.ts` (the conflicts) | the idempotency lookup |
 | T-13 dependency | `bun audit` and the frozen lockfile in CI; images pinned by digest | not applicable |
 | T-17 response hardening | `unit/http/security-headers.test.ts`, `integration/openapi.test.ts` (every kind of answer), the warden scan (28 findings before, 7 after, all HSTS over HTTP) | the middleware removed, and its old position after the body parser |
+| T-11 exhaustion, under stress | `./scripts/stress.sh` ([`docs/STRESS-TEST.md`](docs/STRESS-TEST.md)): spike, ramp-up, soak and a database outage, no `500`, books reconciled (measured, not a CI gate) | not applicable: a measurement |
 | T-14 delivery behind | `bun run test:load` (measured, not asserted) | not applicable: a measurement |
 | T-15, T-16 | none: not mitigated | not applicable |
 

@@ -250,6 +250,7 @@ Every required test runs against **real PostgreSQL and a real SQS emulator**, wi
 | `test:integration` | Each constraint names the row it refuses; migrations run up, down and up; a crash after each write commits nothing; inbox and redelivery; concurrent publishers; retry and DLQ, including with **PostgreSQL really stopped** and the **broker unreachable** (a proxy in front of it refuses every call); reconciliation with divergences injected through SQL |
 | `test:concurrency` | The eight mandatory scenarios of the challenge against **three or more real processes**, killed and restarted. A kill happens at a state the test has found (an acknowledgement or a publish held at a proxy in front of the real broker, wallet locks the test holds), never at a moment it hoped for. Every test ends on `balance == ledger rebuild` |
 | security scan | `./scripts/security-scan.sh`: a black-box scan of the running API with the owner's warden, from the OpenAPI spec, against a throwaway stack. It found missing response headers, fixed and tested; the rest is in [`docs/SECURITY-SCAN.md`](docs/SECURITY-SCAN.md), with what it did not cover |
+| stress | `./scripts/stress.sh`: spike, ramp-up, ten-minute soak and a database outage, driven by the owner's sapper against a throwaway stack, each judged by SLOs written beforehand (no `500`, bounded `503`) and then by reconciling the wallet. All passed; one wallet only, outbox not observed. [`docs/STRESS-TEST.md`](docs/STRESS-TEST.md) |
 | `test:load` | An experiment, not a gate: throughput, p50/p95/p99, error rate, lock conflicts and outbox lag, written up in [`docs/LOAD-TEST.md`](docs/LOAD-TEST.md) |
 
 **Tests that guard a protection were seen failing.** Each protection was removed once and the test watched go red: the wallet lock, the idempotency lookup, the inbox, acknowledging before the commit, the outbox lease, `SKIP LOCKED`, marking an event before publishing it, and others listed per threat in [`THREAT-MODEL.md`](THREAT-MODEL.md). Every requirement id is cited by a test or the code that implements it, and CI fails if one is not.
@@ -277,6 +278,7 @@ Every required test runs against **real PostgreSQL and a real SQS emulator**, wi
 | [`docs/adr/`](docs/adr/README.md) | Every contested decision and the option rejected |
 | [`docs/openapi.yaml`](docs/openapi.yaml) | The HTTP contract, OpenAPI 3.1 |
 | [`docs/LOAD-TEST.md`](docs/LOAD-TEST.md) | The load experiment: method, figures and what they do not show |
+| [`docs/STRESS-TEST.md`](docs/STRESS-TEST.md) | The stress scenarios: SLOs stated first, results, and what they do not show |
 | [`docs/SECURITY-SCAN.md`](docs/SECURITY-SCAN.md) | The security scan: how to run it, what it found, what was done, what it did not cover |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`RELEASING.md`](RELEASING.md) | Gitflow, commits, checks, releases |
 
