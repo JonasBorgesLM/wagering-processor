@@ -29,3 +29,7 @@ A lock-free read returns replays of terminal transactions before queueing, so du
 
 ## Reopening criterion
 Load tests showing a realistic hot wallet exhausting the pool at a rate the provider contract requires.
+
+## Amendment: what the load test showed
+
+`bun run test:load` ([`docs/LOAD-TEST.md`](../LOAD-TEST.md), three 20-second runs on one laptop): one wallet settles about 145 bets per second, in a row, about 7 ms each; with 64 callers on it the slowest answer was 1.8 s against the 2 s lock timeout, and with 256 callers 3.1 % of answers were `503` from the pool, with no lock timeout. The reopening criterion needs a rate the provider contract requires, and the challenge gives none, so it is **not met and cannot be decided**: nothing here shows a realistic hot wallet failing. The margin of the lock timeout is small.
