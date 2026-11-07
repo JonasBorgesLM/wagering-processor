@@ -17,6 +17,7 @@
     "test:unit": "bun test test/unit",
     "test:integration": "bun test test/integration",
     "test:concurrency": "bun test test/concurrency",
+    "test:load": "bun run test/load/load.ts",
     "check:docs": "./.github/scripts/check-docs.sh"
   },
   "dependencies": {
