@@ -126,6 +126,11 @@ queue ───SQS────▶ [ consumer ]┘                          │
 **Mitigation:** the statement timeout bounds each call, and the read takes no lock, so it cannot block a wallet directly.
 **Residual:** no rate limit and no authentication (SR-03). The ledger page is bounded (200 entries) and is not a lever; the reconciliation is.
 
+### T-17 — A JSON response used as something else
+**Actor:** a browser, a shared cache. **Impact:** a body sniffed as a script or markup, a page framed, an id leaked in a `Referer`, a balance kept by a cache.
+**Mitigation:** FR-100. Found by the security scan ([`docs/SECURITY-SCAN.md`](docs/SECURITY-SCAN.md)), which saw none of these headers; they are now on every response, tested on each kind of answer.
+**Residual:** `Strict-Transport-Security` goes only on a request that arrived over TLS, so over plain HTTP the scanner still reports it; TLS is the deployment's (section 7). There is still no CORS configuration, which is the secure default for an API no browser is meant to call.
+
 ## 5. Coverage matrix
 
 | Threat | Requirements |
@@ -146,6 +151,7 @@ queue ───SQS────▶ [ consumer ]┘                          │
 | T-14 | FR-91, NFR-06 |
 | T-15 | none |
 | T-16 | FR-71, NFR-11 |
+| T-17 | FR-100, FR-65 |
 
 SR-02 is hardening: it keeps T-05 true on the queue path.
 
@@ -167,6 +173,7 @@ What each mitigation is tested by, and whether the protection was removed to see
 | T-11 exhaustion | `http-transactions.test.ts` (a burst larger than the pool), `settlement.test.ts` (the pool and the terminated connection), body-limit tests | the connection errors were found by the failure suite on a slow runner and fixed |
 | T-12 key squatting | `settlement.test.ts`, `http-transactions.test.ts` (the conflicts) | the idempotency lookup |
 | T-13 dependency | `bun audit` and the frozen lockfile in CI; images pinned by digest | not applicable |
+| T-17 response hardening | `unit/http/security-headers.test.ts`, `integration/openapi.test.ts` (every kind of answer), the warden scan (28 findings before, 7 after, all HSTS over HTTP) | the middleware removed, and its old position after the body parser |
 | T-14 delivery behind | `bun run test:load` (measured, not asserted) | not applicable: a measurement |
 | T-15, T-16 | none: not mitigated | not applicable |
 

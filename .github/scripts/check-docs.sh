@@ -61,14 +61,14 @@ fi
 # Cross-project citations are written qualified -- `other/IR-06` -- and skipped
 # here; unqualified they would be checked against this project's numbering.
 if [ -n "$REQUIREMENTS_FILE" ] && [ -f "$REQUIREMENTS_FILE" ]; then
-  defined=$(grep -oE "\*\*($ID_PREFIXES)-[0-9]{2}" "$REQUIREMENTS_FILE" | tr -d '*' | sort -u)
-  referenced=$(grep -rhoE "(^|[^/[:alnum:]])($ID_PREFIXES)-[0-9]{2}\b" \
+  defined=$(grep -oE "\*\*($ID_PREFIXES)-[0-9]{2,3}" "$REQUIREMENTS_FILE" | tr -d '*' | sort -u)
+  referenced=$(grep -rhoE "(^|[^/[:alnum:]])($ID_PREFIXES)-[0-9]{2,3}\b" \
                  --include='*.md' --include='*.go' --include='*.ts' --include='*.tsx' \
                  --include='*.js' --include='*.py' --include='*.yml' --exclude-dir=node_modules \
-                 . 2>/dev/null | grep -oE "($ID_PREFIXES)-[0-9]{2}" | sort -u)
+                 . 2>/dev/null | grep -oE "($ID_PREFIXES)-[0-9]{2,3}" | sort -u)
   # An id defined twice makes every citation of it ambiguous, and the check below would still pass: it only asks
   # whether an id exists. This was found by hand, when two new requirements reused numbers from reconciliation.
-  duplicated=$(grep -oE "^- \*\*($ID_PREFIXES)-[0-9]{2}" "$REQUIREMENTS_FILE" | sed -E 's/^- \*\*//' | sort | uniq -d | tr '\n' ' ')
+  duplicated=$(grep -oE "^- \*\*($ID_PREFIXES)-[0-9]{2,3}" "$REQUIREMENTS_FILE" | sed -E 's/^- \*\*//' | sort | uniq -d | tr '\n' ' ')
   if [ -n "$duplicated" ]; then
     fail "requirement ids defined more than once in $REQUIREMENTS_FILE: $duplicated"
     note "Give each requirement its own number; a citation of a repeated id points at two things."
@@ -95,15 +95,15 @@ fi
 # would fail without the protection: that is what the negative controls in the pull requests are for. A range is
 # written "FR-40 to FR-48" and counts for every id in it.
 if [ -n "$REQUIREMENTS_FILE" ] && [ -f "$REQUIREMENTS_FILE" ]; then
-  code_citations=$(grep -rhoE "(^|[^/[:alnum:]])($ID_PREFIXES)-[0-9]{2}( to ($ID_PREFIXES)-[0-9]{2})?" \
+  code_citations=$(grep -rhoE "(^|[^/[:alnum:]])($ID_PREFIXES)-[0-9]{2,3}( to ($ID_PREFIXES)-[0-9]{2,3})?" \
                      --include='*.ts' --include='*.sh' --include='*.yml' --include='*.cjs' \
                      --exclude=check-docs.sh --exclude-dir=node_modules \
                      src test scripts migrations .github commitlint.config.cjs 2>/dev/null \
                    | sed -E 's/^[^A-Z]//' \
-                   | awk '{ if (match($0, /(NFR|FR|SR|IR)-[0-9][0-9]/)) {
-                              prefix = substr($0, RSTART, RLENGTH - 3); from = substr($0, RSTART + RLENGTH - 2) + 0;
+                   | awk '{ if (match($0, /(NFR|FR|SR|IR)-[0-9][0-9][0-9]?/)) {
+                              prefix = substr($0, RSTART, index(substr($0, RSTART, RLENGTH), "-") - 1); from = substr($0, RSTART + length(prefix) + 1, RLENGTH - length(prefix) - 1) + 0;
                               printf "%s-%02d\n", prefix, from;
-                              if ($0 ~ / to /) { split($0, parts, " to "); to = substr(parts[2], length(parts[2]) - 1) + 0;
+                              if ($0 ~ / to /) { split($0, parts, " to "); n = split(parts[2], tail, "-"); to = tail[n] + 0;
                                 for (i = from + 1; i <= to; i++) printf "%s-%02d\n", prefix, i } } }' | sort -u)
   uncited=""
   for id in $defined; do printf '%s\n' "$code_citations" | grep -qx "$id" || uncited="$uncited $id"; done
