@@ -117,7 +117,7 @@ queue ───SQS────▶ [ consumer ]┘                          │
 **Residual:** measured in the load test: three publishers send about 130 to 250 events per second while settlement can produce about 900, so above roughly 65 to 125 bets per second sustained the lag grows without bound. Nothing is lost or duplicated. The sends are batched (ten to a call), and the local emulator, which handles requests one after another, is the ceiling; real SQS was not measured.
 
 ### T-15 — Unbounded storage growth
-**Actor:** time. **Impact:** `inbox_messages` and `outbox_messages` grow with every message and event, and nothing deletes them; on a long-running system the disk fills.
+**Actor:** time. **Impact:** `inbox_messages` and `outbox_messages` grow with every message and event; without the retention job (FR-103, FR-104) a long-running system would fill its disk.
 **Mitigation:** a retention job in the publisher role deletes inbox rows older than `INBOX_RETENTION_DAYS` (21, above the queue's 14-day maximum plus a DLQ allowance) and published outbox rows older than `OUTBOX_RETENTION_DAYS` (30), in batches, and never an unpublished one (FR-103, FR-104).
 **Residual:** the ledger and the transactions are kept forever by design, so storage still grows with the number of transactions, only slower. Deleted space is reused but not returned to the system without `VACUUM FULL`. The defaults are judgements and were not measured on a real volume. An inbox retention set below the queue's would let a late redelivery reach settlement without its inbox row (not tested what the idempotency key then does).
 
@@ -157,7 +157,7 @@ SR-02 is hardening: it keeps T-05 true on the queue path.
 
 ## 6. Verification
 
-What each mitigation is tested by, and whether the protection was removed to see the test go red. "Removed" means a mutation was run and the named test failed. Since issue #55 the main ones are repeatable: `bun run test:mutation` applies the 22 mutants of `test/mutation/mutants.ts` (each a protection named in the table below, with the tests that must go red) and fails if any survives or no longer applies; `--list` shows them. The rest of this column was done by hand, PR by PR, and is not repeatable.
+What each mitigation is tested by, and whether the protection was removed to see the test go red. "Removed" means a mutation was run and the named test failed. Since issue #55 the main ones are repeatable: `bun run test:mutation` applies the 23 mutants of `test/mutation/mutants.ts` (each a protection named in the table below, with the tests that must go red) and fails if any survives or no longer applies; `--list` shows them. The rest of this column was done by hand, PR by PR, and is not repeatable.
 
 | Threat | Tests | Protection removed and seen red |
 | --- | --- | --- |
