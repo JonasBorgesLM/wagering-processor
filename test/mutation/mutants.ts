@@ -199,6 +199,15 @@ export const MUTANTS: Mutant[] = [
     tests: ["test/integration/settlement-model.test.ts"],
   },
   {
+    id: "ledger-entry-appended",
+    protection: "appending the ledger entry of a balance change",
+    guards: "T-09, §13 final invariant",
+    file: "src/wagering/application/settlement-outcome.ts",
+    find: "    await tx.ledger.append(entry);",
+    replace: "",
+    tests: ["test/integration/settlement.test.ts"],
+  },
+  {
     id: "player-wallet-check",
     protection: "refusing a transaction for another player's wallet",
     guards: "T-05",
