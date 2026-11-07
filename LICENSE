@@ -1,0 +1,38 @@
+Copyright (c) 2026 Jonas Borges Leão de Moraes. All rights reserved.
+
+This repository is made publicly visible so that its source code, documentation
+and history can be read, and so that the work can be evaluated, including as part
+of a hiring process. Making it visible grants no licence beyond the following.
+
+Permitted, without further permission:
+
+  1. Viewing the source code and documentation, on GitHub or in a local clone.
+  2. Building and running it locally for the sole purpose of evaluating the
+     author's work.
+
+Not permitted without the prior written permission of the copyright holder:
+
+  1. Copying, reproducing or publishing the software or its documentation, in
+     whole or in part, outside the viewing described above.
+  2. Modifying it, or creating derivative works based on it.
+  3. Distributing, sublicensing, selling or otherwise making it available to
+     others.
+  4. Using it, or any part of it, in another project, product or service, whether
+     commercial or not, including submitting it, in whole or in part, as one's
+     own work.
+
+The GitHub Terms of Service allow users to view and fork public repositories
+within GitHub. A fork made under those terms receives no rights beyond the ones
+granted here.
+
+Third-party dependencies are the property of their authors and are used under
+their own licences, which this notice does not change.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+Requests for permission: open an issue on the repository, or contact the author
+through GitHub (@JonasBorgesLM).

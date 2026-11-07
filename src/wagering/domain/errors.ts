@@ -1,0 +1,58 @@
+/** A broken rule inside the domain. Business rejections are values, not errors: see SettlementPolicy. */
+export abstract class DomainError extends Error {
+  abstract readonly code: string;
+}
+
+export class InvalidMoneyError extends DomainError {
+  readonly code = "INVALID_MONEY";
+  override readonly name = "InvalidMoneyError";
+}
+
+export class CurrencyMismatchError extends DomainError {
+  readonly code = "CURRENCY_MISMATCH";
+  override readonly name = "CurrencyMismatchError";
+}
+
+export class InvalidWalletError extends DomainError {
+  readonly code = "INVALID_WALLET";
+  override readonly name = "InvalidWalletError";
+}
+
+/** A movement the wallet can never apply: not positive, or malformed. */
+export class InvalidMovementError extends DomainError {
+  readonly code = "INVALID_MOVEMENT";
+  override readonly name = "InvalidMovementError";
+}
+
+export class InsufficientFundsError extends DomainError {
+  readonly code = "INSUFFICIENT_FUNDS";
+  override readonly name = "InsufficientFundsError";
+}
+
+export class BalanceLimitExceededError extends DomainError {
+  readonly code = "BALANCE_LIMIT_EXCEEDED";
+  override readonly name = "BalanceLimitExceededError";
+}
+
+export class InvalidLedgerEntryError extends DomainError {
+  readonly code = "INVALID_LEDGER_ENTRY";
+  override readonly name = "InvalidLedgerEntryError";
+}
+
+/** A transition the lifecycle does not allow. Always a programming error, never a business path (FR-30). */
+export class InvalidTransactionStateError extends DomainError {
+  readonly code = "INVALID_TRANSACTION_STATE";
+  override readonly name = "InvalidTransactionStateError";
+}
+
+/** A transaction that is malformed as built, as opposed to one the business rules refuse (see RejectionCode). */
+export class InvalidWagerTransactionError extends DomainError {
+  readonly code = "INVALID_WAGER_TRANSACTION";
+  override readonly name = "InvalidWagerTransactionError";
+}
+
+/** An event that cannot be built from what it was given: the wrong state, or inputs that do not describe one moment. */
+export class InvalidIntegrationEventError extends DomainError {
+  readonly code = "INVALID_INTEGRATION_EVENT";
+  override readonly name = "InvalidIntegrationEventError";
+}
