@@ -1,6 +1,6 @@
 {
   "name": "wagering-processor",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
@@ -19,6 +19,7 @@
     "test:integration": "bun test test/integration",
     "test:concurrency": "bun test test/concurrency",
     "test:load": "bun run test/load/load.ts",
+    "test:mutation": "bun run test/mutation/run.ts",
     "check:docs": "./.github/scripts/check-docs.sh"
   },
   "dependencies": {
@@ -38,6 +39,8 @@
     "@commitlint/cli": "21.2.4",
     "@commitlint/config-conventional": "21.2.4",
     "@types/bun": "1.4.4",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "dependency-cruiser": "18.7.2",
     "lefthook": "2.2.2",
     "typescript": "6.0.3"

@@ -1,0 +1,19 @@
+# Safety config for stressing this service's own local stack with sapper (https://github.com/JonasBorgesLM/sapper).
+#
+#   ./scripts/stress.sh spike ramp-up
+#
+# The target is a throwaway instance on loopback with a database made for the run. The tier is `lab`, which is what it
+# is: BlastGuard's caps below are the ceiling the scenarios must stay under, and the run is refused above them.
+schema_version: 1
+
+target:
+  base_url: http://127.0.0.1:3098
+  tier: lab
+
+blast_radius:
+  max_concurrency: 128
+  max_duration: 20m
+  # Stops a run that is plainly broken (the instance died) instead of letting it send 20 minutes of refused connections.
+  auto_abort:
+    error_rate_over: 0.5
+    p99_over: 8s

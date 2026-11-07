@@ -336,7 +336,7 @@ describe("retries", () => {
       new MikroOrmOutboxStore(world.orm, world.options),
       new SqsEventPublisher(gone),
       world.clock,
-      { batchSize: 25, leaseMs: 1_000, retryDelayMs: () => 60_000 },
+      { batchSize: 25, concurrency: 4, leaseMs: 1_000, retryDelayMs: () => 60_000 },
       metrics,
     );
     const delta = await change("wagering_retries_total", { component: "outbox" }, () => publish.runOnce());
@@ -434,7 +434,7 @@ describe("outbox lag", () => {
       new MikroOrmOutboxStore(world.orm, world.options),
       new SqsEventPublisher(sqs),
       world.clock,
-      { batchSize: 500, leaseMs: 1_000, retryDelayMs: () => 500 },
+      { batchSize: 500, concurrency: 4, leaseMs: 1_000, retryDelayMs: () => 500 },
       metrics,
     );
     expect(await sample("wagering_outbox_unpublished")).toBe(0);

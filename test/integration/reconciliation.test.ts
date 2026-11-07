@@ -1,11 +1,16 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { WagerTransactionKind as Kind } from "../../src/wagering/domain/wager-transaction";
+import { TransientFailureError } from "../../src/wagering/application/errors";
+import { ReconcileWallet } from "../../src/wagering/application/reconcile-wallet";
+import {
+  WagerTransactionKind as Kind,
+  WagerTransactionStatus as Status,
+} from "../../src/wagering/domain/wager-transaction";
 import { type RunningApp, startApp } from "../support/app";
 import { call, type Reply } from "../support/http";
 import { brl, command, SettlementWorld } from "../support/settlement";
 
-// Requirements: FR-70 to FR-72, FR-97 to FR-99.
+// Requirements: FR-70 to FR-72, FR-97 to FR-99, FR-102.
 // Reconciliation over the real HTTP stack and a real database (FR-70 to FR-72). Divergences are injected through
 // SQL, because that is the only way a wallet could ever come to disagree with its ledger.
 
@@ -267,5 +272,48 @@ describe("what is refused", () => {
     const response = await reconcile("not-a-uuid");
     expect(response.status).toBe(400);
     expect((await response.json()).error.code).toBe("VALIDATION_ERROR");
+  });
+});
+
+// T-16, issue #56. A reconciliation reads a whole ledger and holds a pooled connection while it does. The bound keeps
+// the rest of the pool for settlement.
+describe("reconciliations cannot take the pool from settlement (FR-102)", () => {
+  /** A small pool, and a reader that holds a connection for two seconds the way a large ledger would. */
+  async function crowded(maxConcurrent: number) {
+    const crowdedWorld = await SettlementWorld.create(undefined, { max: 4, acquireTimeoutMs: 1_000 });
+    const wallet = await crowdedWorld.openWallet("500.00");
+    const slow = {
+      snapshot: async () => {
+        await crowdedWorld.sql("select pg_sleep(2)");
+        return {
+          storedBalance: brl("0.00"),
+          credits: brl("0.00"),
+          debits: brl("0.00"),
+          checkedEntries: 0,
+          issueCount: 0,
+          issues: [],
+        };
+      },
+    };
+    const useCase = new ReconcileWallet(slow, { checked: () => undefined }, maxConcurrent);
+    return { crowdedWorld, wallet, useCase };
+  }
+
+  test("with the bound, a crowd of reconciliations leaves settlement its connections", async () => {
+    const { crowdedWorld, wallet, useCase } = await crowded(2);
+    try {
+      const crowd = Array.from({ length: 10 }, () =>
+        useCase.execute(wallet.walletId).catch((error: unknown) => error),
+      );
+      await Bun.sleep(200); // all ten have been tried; two hold a connection each, eight were refused
+      const started = performance.now();
+      const result = await crowdedWorld.useCase.execute(command(wallet, { money: brl("10.00") }));
+      expect(result.status).toBe(Status.Processed);
+      expect(performance.now() - started).toBeLessThan(1_000);
+      const outcomes = await Promise.all(crowd);
+      expect(outcomes.filter((o) => o instanceof TransientFailureError)).toHaveLength(8);
+    } finally {
+      await crowdedWorld.destroy();
+    }
   });
 });

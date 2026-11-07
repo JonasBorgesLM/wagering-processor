@@ -360,10 +360,10 @@ describe("6. publishers on the same outbox", () => {
     ).map((row) => row.id as string);
 
     // The publish is held at the proxy: the rows are claimed and nothing has been sent.
-    const proxy = BrokerProxy.start((request) => request.action === "SendMessage");
+    const proxy = BrokerProxy.start((request) => request.action === "SendMessageBatch");
     try {
       const victim = await cluster.start("publisher", { SQS_ENDPOINT: proxy.origin });
-      await eventually(() => proxy.heldCount("SendMessage") === 1, "the publish to be held");
+      await eventually(() => proxy.heldCount("SendMessageBatch") === 1, "the publish to be held");
       const claimed = await world.sql(
         "select count(*)::int as n from outbox_messages where published_at is null and attempts = 1",
       );

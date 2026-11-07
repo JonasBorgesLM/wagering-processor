@@ -1,0 +1,29 @@
+# Removes each protection in turn and fails if no test notices (issue #55, test/mutation/mutants.ts).
+# Not part of ci.yml: it reruns the integration suites once per mutant, so it takes tens of minutes. Weekly, and on demand.
+name: mutation
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    name: every protection is missed by some test
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - run: docker compose up -d --wait postgres sqs
+      - run: bun run test:mutation
+      - if: failure()
+        run: |
+          git status --short
+          docker compose logs --tail 100

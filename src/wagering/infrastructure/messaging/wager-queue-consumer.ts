@@ -29,6 +29,12 @@ export interface ConsumerOptions {
   backoff: BackoffPolicy;
   /** Deliveries a message gets before it is dead-lettered. The queue's redrive policy says the same number. */
   maxReceives: number;
+  /**
+   * Asked before every receive. While it says "down" the consumer receives nothing, so an outage of the database does
+   * not spend the deliveries of the messages waiting in the queue (issue #52). Absent, the consumer always receives.
+   * It only gates receiving: a failure that happens while the database answers still counts against the limit.
+   */
+  databaseIsUp?: () => Promise<"up" | "down">;
 }
 
 /**
@@ -42,6 +48,7 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
   private readonly logger = new Logger(WagerQueueConsumer.name);
   private readonly abort = new AbortController();
   private loop: Promise<void> | undefined;
+  private waitingForDatabase = false;
 
   constructor(
     private readonly sqs: SQSClient,
@@ -78,6 +85,10 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
   private async run(): Promise<void> {
     const queues = await this.resolveQueues();
     while (queues && !this.stopping) {
+      if (!(await this.databaseAnswers())) {
+        await this.pause();
+        continue;
+      }
       let messages: Message[];
       try {
         const received = await this.sqs.send(
@@ -97,6 +108,22 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
       }
       await this.handleBatch(queues, messages);
     }
+  }
+
+  /**
+   * Said once per outage, on the way down and on the way up, not once per probe.
+   *
+   * A probe that says "up" while settlement still fails is not a loop: the message fails, takes a delivery, and the
+   * limit applies as always. At most the batch in hand when the database went away is spent on the outage.
+   */
+  private async databaseAnswers(): Promise<boolean> {
+    if (!this.options.databaseIsUp) return true;
+    const up = (await this.options.databaseIsUp()) === "up";
+    if (up === !this.waitingForDatabase) return up;
+    this.waitingForDatabase = !up;
+    if (up) this.logger.log("The database answers again; receiving resumes");
+    else this.logger.warn("The database does not answer; not receiving until it does");
+    return up;
   }
 
   /** The queues may not exist yet when this process starts, and a missing broker is not a reason to die. */

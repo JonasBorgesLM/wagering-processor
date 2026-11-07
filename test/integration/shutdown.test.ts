@@ -14,6 +14,7 @@ import {
   started,
 } from "../support/consumer-harness";
 import { TEST_ENV } from "../support/env";
+import { freePort } from "../support/ports";
 import { SettlementWorld } from "../support/settlement";
 
 // SIGTERM with messages in flight (FR-80), on the real entry point as a separate process, against the real broker
@@ -21,6 +22,7 @@ import { SettlementWorld } from "../support/settlement";
 
 let world: SettlementWorld;
 const running: Bun.Subprocess[] = [];
+const pendingReleases: Array<() => Promise<void>> = [];
 
 beforeAll(async () => {
   await setUpQueues();
@@ -37,13 +39,14 @@ afterEach(async () => {
     child.kill("SIGKILL");
     await child.exited;
   }
+  for (const release of pendingReleases.splice(0)) await release();
   // A killed consumer may leave a long poll open at the broker for one more wait.
   await Bun.sleep(1_200);
   await purge();
-});
+}, 30_000);
 
 function startProcess(shutdownTimeoutMs: number) {
-  const port = 20000 + Math.floor(Math.random() * 20000);
+  const port = freePort();
   const child = Bun.spawn(["bun", "run", "src/main.ts"], {
     env: {
       ...process.env,
@@ -72,6 +75,26 @@ async function waitForLive(base: string): Promise<void> {
   );
 }
 
+/**
+ * Waits until the process is inside the first message: received is not enough, because a signal that lands between
+ * receiving a batch and starting its first message makes the consumer give all three back, which is right (FR-80) and
+ * is not what these tests are about. Settling the first message means waiting on the lock the test holds, so a backend
+ * waiting on a lock is the state to find.
+ */
+async function firstMessageWaitingOnTheLock(): Promise<void> {
+  await eventually(async () => (await depth()).inFlight === 3, "the batch to be received");
+  await eventually(
+    async () =>
+      ((
+        await world.sql(
+          "select count(*)::int as n from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()",
+        )
+      )[0]?.n as number) >= 1,
+    "the first message to be waiting on the wallet lock",
+    15_000,
+  );
+}
+
 /** Three wallets, a message for each, and the first wallet locked: so the first message cannot finish. */
 async function threeMessagesFirstStuck() {
   const wallets = [
@@ -79,7 +102,16 @@ async function threeMessagesFirstStuck() {
     await world.openWallet("100.00"),
     await world.openWallet("100.00"),
   ];
-  const release = await world.holdLock(wallets[0]?.walletId as string);
+  const held = await world.holdLock(wallets[0]?.walletId as string);
+  let released = false;
+  // Idempotent, so a test calls it where it means to and afterEach calls it whatever happened: a lock left held keeps
+  // a transaction open, and the pool with it, until the hook times out.
+  const release = async () => {
+    if (released) return;
+    released = true;
+    await held();
+  };
+  pendingReleases.push(release);
   for (const wallet of wallets) await send(message(wallet), wallet.walletId);
   return { wallets, release };
 }
@@ -90,7 +122,7 @@ describe("SIGTERM with a message in flight (FR-80)", () => {
     const { child, base } = startProcess(20_000);
     await waitForLive(base);
     // All three received in one batch: the first is being settled, waiting on the lock, and two have not started.
-    await eventually(async () => (await depth()).inFlight === 3, "the batch to be received");
+    await firstMessageWaitingOnTheLock();
 
     child.kill("SIGTERM");
 
@@ -127,7 +159,7 @@ describe("SIGTERM with a message in flight (FR-80)", () => {
     const { wallets, release } = await threeMessagesFirstStuck();
     const { child, base } = startProcess(2_000);
     await waitForLive(base);
-    await eventually(async () => (await depth()).inFlight === 3, "the batch to be received");
+    await firstMessageWaitingOnTheLock();
 
     const signalled = performance.now();
     child.kill("SIGTERM");

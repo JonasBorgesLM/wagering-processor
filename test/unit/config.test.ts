@@ -56,6 +56,13 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...valid, QUEUE_WAIT_SECONDS: "0" })).toThrow(InvalidConfigError);
   });
 
+  test("the outbox claims 100 rows a round and sends over one lane, up to 32", () => {
+    expect(loadConfig(valid)).toMatchObject({ outboxBatchSize: 100, outboxPublishConcurrency: 1 });
+    expect(loadConfig({ ...valid, OUTBOX_PUBLISH_CONCURRENCY: "32" }).outboxPublishConcurrency).toBe(32);
+    expect(() => loadConfig({ ...valid, OUTBOX_PUBLISH_CONCURRENCY: "33" })).toThrow(InvalidConfigError);
+    expect(() => loadConfig({ ...valid, OUTBOX_PUBLISH_CONCURRENCY: "0" })).toThrow(InvalidConfigError);
+  });
+
   test("the retry backoff starts at 2 s and is capped at 30 s, and takes both from the environment", () => {
     expect(loadConfig(valid)).toMatchObject({ queueBackoffBaseSeconds: 2, queueBackoffCapSeconds: 30 });
     expect(

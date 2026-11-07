@@ -102,15 +102,41 @@ export interface OutboxStore {
    * nothing is held while publishing, and a publisher that dies hands its rows on by itself.
    */
   claimDue(limit: number, leaseMs: number, now: Date): Promise<OutboxEntry[]>;
-  markPublished(id: string, at: Date): Promise<void>;
-  /** Puts a row back for a later attempt. Nothing is ever given up on (FR-91). */
-  reschedule(id: string, nextAttemptAt: Date): Promise<void>;
+  /** Marks rows published, in one statement. Rows already published are left alone. */
+  markPublished(ids: readonly string[], at: Date): Promise<void>;
+  /** Puts rows back for a later attempt, each at its own time, in one statement. Nothing is ever given up on (FR-91). */
+  reschedule(items: ReadonlyArray<{ id: string; nextAttemptAt: Date }>): Promise<void>;
 }
 
-/** Sends an event to the broker. Resolves only when the broker has accepted it. */
-export interface EventPublisher {
-  publish(entry: OutboxEntry): Promise<void>;
+/** Removes what has outlived its use from the two tables that grow with traffic (T-15). Each returns how many it removed. */
+export interface RetentionStore {
+  /** Inbox rows received before `cutoff`, at most `limit` of them. */
+  deleteInboxReceivedBefore(cutoff: Date, limit: number): Promise<number>;
+  /** Outbox rows that were published before `cutoff`, at most `limit`. A row not yet published is never removed. */
+  deletePublishedOutboxBefore(cutoff: Date, limit: number): Promise<number>;
 }
+
+export type RetentionTable = "inbox" | "outbox";
+
+export interface PublishBatchResult {
+  /** Ids of the entries the broker accepted. */
+  accepted: string[];
+  /** Entries it refused, with why. A call that fails as a whole throws instead, and means all of them. */
+  rejected: Array<{ id: string; error: unknown }>;
+}
+
+/**
+ * Sends events to the broker, a few per call. Resolves only for what the broker accepted. The entries of one call are
+ * sent in order, so a wallet's events within a call keep theirs; across calls, the caller keeps a wallet's events in
+ * one sequence (`planLanes`).
+ */
+export interface EventPublisher {
+  /** At most `MAX_PUBLISH_BATCH` entries. Throws if the call as a whole failed. */
+  publishBatch(entries: readonly OutboxEntry[]): Promise<PublishBatchResult>;
+}
+
+/** What the broker accepts in one call. */
+export const MAX_PUBLISH_BATCH = 10;
 
 /** A transaction a worker has claimed because it was waiting for its reference and is due. */
 export interface WaitingTransaction {
@@ -208,6 +234,8 @@ export interface WageringMetrics {
     outcome: "decided" | "replay" | "error";
     seconds: number;
   }): void;
+  /** The retention job removed rows from a table. */
+  retentionDeleted(table: RetentionTable, count: number): void;
 }
 
 export const NO_METRICS: WageringMetrics = {
@@ -217,4 +245,5 @@ export const NO_METRICS: WageringMetrics = {
   deadLettered: () => undefined,
   databaseTransient: () => undefined,
   settlementTimed: () => undefined,
+  retentionDeleted: () => undefined,
 };

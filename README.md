@@ -11,7 +11,7 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)
 ![SQS](https://img.shields.io/badge/SQS-MiniStack-FF9900?logo=amazonsqs&logoColor=white)
 
-Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge) · v1.0.0
+Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge) · v1.1.0
 
 </div>
 
@@ -19,7 +19,7 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 
 Game providers send `BET`, `WIN`, `LOSS`, `REFUND` and `ROLLBACK` operations over HTTP or through an SQS queue. Each one is applied to a player's wallet **exactly once**, however many times it is sent, in whatever order, through whichever instance. Every balance change has its ledger entry, and the stored balance always equals what the ledger rebuilds.
 
-> **Status: v1.0.0.** Everything the challenge asks for is implemented and tested against real PostgreSQL and a real SQS emulator, including a failure suite that kills real processes. What is **not** here is listed under [Known limitations](#known-limitations). Read it before relying on this.
+> **Status: v1.1.0.** Everything the challenge asks for is implemented and tested against real PostgreSQL and a real SQS emulator, including a failure suite that kills real processes. What is **not** here is listed under [Known limitations](#known-limitations). Read it before relying on this.
 
 ## Contents
 
@@ -137,9 +137,12 @@ All through environment variables; `.env.example` has the defaults and a bad val
 | `SHUTDOWN_TIMEOUT_MS` | 25000 | how long a stopping process may take before it exits 1 |
 | `LOCK_TIMEOUT_MS`, `STATEMENT_TIMEOUT_MS` | 2000, 5000 | the wait for a wallet lock; the longest any statement may run |
 | `DATABASE_POOL_MAX`, `DATABASE_ACQUIRE_TIMEOUT_MS` | 10, 1000 | connections per process; the wait to get or open one |
+| `INBOX_RETENTION_DAYS`, `OUTBOX_RETENTION_DAYS`, `RETENTION_INTERVAL_MS` | 21, 30, 3600000 | age past which inbox rows and published outbox rows are deleted; how often the job looks (FR-103, FR-104) |
+| `RECONCILIATION_MAX_CONCURRENT` | 2 | reconciliations running at once in a process; one over is a `503` (FR-102) |
 | `QUEUE_WAIT_SECONDS` | 5 | one poll of the input queue, and so the longest stopping the consumer can take |
 | `QUEUE_BACKOFF_BASE_SECONDS`, `QUEUE_BACKOFF_CAP_SECONDS` | 2, 30 | the wait before a failed message is delivered again |
-| `OUTBOX_POLL_INTERVAL_MS`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE_MS` | 500, 25, 30000 | how the publisher polls, claims and how long a claim is held |
+| `OUTBOX_POLL_INTERVAL_MS`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE_MS` | 500, 100, 30000 | how the publisher polls, how many rows it claims a round (sent ten to a call) and how long a claim is held |
+| `OUTBOX_PUBLISH_CONCURRENCY` | 1 | calls to the broker in flight at once per publisher, up to 32; a wallet's events always go through one lane. Raise it where the broker is real: against the emulator more lanes cost settlement latency |
 | `OUTBOX_RETRY_BASE_SECONDS`, `OUTBOX_RETRY_CAP_SECONDS` | 1, 60 | the wait before a failed publication is tried again (no attempt limit) |
 | `REFERENCE_TTL_SECONDS` | 3600 | how long a reversal waits for its reference |
 | `REFERENCE_RETRY_BASE_SECONDS`, `REFERENCE_RETRY_CAP_SECONDS` | 5, 300 | the wait between looks at a waiting reversal |
@@ -163,6 +166,8 @@ The reasoning behind each default, and what it does not guarantee, is in ARCHITE
 ## API
 
 Wallets and transactions are reachable over HTTP. **Nothing authenticates a caller yet** (ADR-0009), so do not expose it.
+
+The machine-readable contract is [`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI 3.1): every route, request body, header and status, with examples. A test keeps it true: it fails when a route is served that the spec lacks, or listed that is not served, when an example does not fit its own schema, and when a real answer does not fit the schema the spec declares for its status.
 
 | Request | Answer |
 | --- | --- |
@@ -234,6 +239,7 @@ Logs are JSON, one line per event, with the fields that tie it together: `correl
 | `wagering_outbox_lag_seconds`, `wagering_outbox_unpublished` | none | measured when scraped: the age of the oldest event not yet published, and how many are waiting |
 | `wagering_settlement_duration_seconds` | `source`, `outcome` (`decided`, `replay`, `error`) | histogram of one settlement, first line of the use case to its return |
 | `wagering_reconciliations_total` | `result` | a reconciliation, consistent or divergent |
+| `wagering_retention_deleted_total` | `table`: `inbox`, `outbox` | rows the retention job removed |
 
 No label takes a value from a request (a wallet, a provider, a key), because that would make the number of series unbounded. The counters an alert would watch start at zero, so a rate over one that has not happened yet is 0 and not absent; the `wagering_transactions_total` series appear with their first transaction. **Not provided:** dashboards, tracing, and alert rules; the metrics are the raw material.
 
@@ -244,22 +250,24 @@ Every required test runs against **real PostgreSQL and a real SQS emulator**, wi
 | Suite | What it proves |
 | --- | --- |
 | `test:unit` | `Money`, the wallet, the ledger entry, the transaction lifecycle, every rule of `BET`, `WIN`, `LOSS`, `REFUND` and `ROLLBACK`, currency conflicts, the idempotency decisions, and the **order** of the settlement checks (every pair of adjacent checks is swapped and the test must fail) |
-| `test:integration` | Each constraint names the row it refuses; migrations run up, down and up; a crash after each write commits nothing; inbox and redelivery; concurrent publishers; retry and DLQ, including with **PostgreSQL really stopped** and the **broker unreachable** (a proxy in front of it refuses every call); reconciliation with divergences injected through SQL |
+| `test:integration` | Each constraint names the row it refuses; migrations run up, down and up; a crash after each write commits nothing; inbox and redelivery; concurrent publishers; retry and DLQ, including with **PostgreSQL really stopped** and the **broker unreachable** (a proxy in front of it refuses every call); reconciliation with divergences injected through SQL; **random sequences of every operation against a reference model** (seeded, a failing seed is printed and repeatable) |
 | `test:concurrency` | The eight mandatory scenarios of the challenge against **three or more real processes**, killed and restarted. A kill happens at a state the test has found (an acknowledgement or a publish held at a proxy in front of the real broker, wallet locks the test holds), never at a moment it hoped for. Every test ends on `balance == ledger rebuild` |
+| security scan | `./scripts/security-scan.sh`: a black-box scan of the running API with the owner's warden, from the OpenAPI spec, against a throwaway stack. It found missing response headers, fixed and tested; the rest is in [`docs/SECURITY-SCAN.md`](docs/SECURITY-SCAN.md), with what it did not cover |
+| stress | `./scripts/stress.sh`: spike, ramp-up, ten-minute soak and a database outage, driven by the owner's sapper against a throwaway stack, each judged by SLOs written beforehand (no `500`, bounded `503`) and then by reconciling the wallet. All passed; one wallet only, outbox not observed. [`docs/STRESS-TEST.md`](docs/STRESS-TEST.md) |
 | `test:load` | An experiment, not a gate: throughput, p50/p95/p99, error rate, lock conflicts and outbox lag, written up in [`docs/LOAD-TEST.md`](docs/LOAD-TEST.md) |
 
-**Tests that guard a protection were seen failing.** Each protection was removed once and the test watched go red: the wallet lock, the idempotency lookup, the inbox, acknowledging before the commit, the outbox lease, `SKIP LOCKED`, marking an event before publishing it, and others listed per threat in [`THREAT-MODEL.md`](THREAT-MODEL.md). Every requirement id is cited by a test or the code that implements it, and CI fails if one is not.
+**Tests that guard a protection were seen failing, and for the main ones anyone can see it again.** `bun run test:mutation` removes 22 protections one at a time (the wallet lock, the idempotency lookup, the inbox, acknowledging before the commit, the outbox lease and `SKIP LOCKED`, marking an event before publishing it, the delivery limit, the reconciliation bound and others, listed in `test/mutation/mutants.ts`), runs the tests that guard each, restores the file, and fails if one survives or no longer applies. It runs weekly in CI (`mutation.yml`, not yet run there) and takes tens of minutes. Its first run found that `SKIP LOCKED` on the outbox and on the pending-reference claim, recorded as removed and seen red by hand, were not: no test noticed either gone. Tests for what they actually buy (not waiting on a row another process holds) were added. The rest of the protections, listed per threat in [`THREAT-MODEL.md`](THREAT-MODEL.md), were removed by hand and are not repeatable. Every requirement id is cited by a test or the code that implements it, and CI fails if one is not.
 
 ## Known limitations
 
 - **No authentication** (ADR-0009, T-06). Anyone who reaches the API can act as any provider, and can open a wallet with any balance. **Do not expose it.**
-- **Event publishing is the slowest part, by a wide margin.** On the reference machine the publishers send about 130 events per second while settlement can produce about 900, so **a sustained rate above roughly 65 bets per second grows the outbox lag without bound** until the load stops. Nothing is lost or duplicated; consumers fall behind. Batching the sends is the fix, and is not done ([`docs/LOAD-TEST.md`](docs/LOAD-TEST.md)).
+- **Event publishing is the slowest part, by a wide margin.** On the reference machine the publishers send about 130 to 250 events per second while settlement can produce about 900, so **a sustained rate above roughly 65 to 125 bets per second grows the outbox lag without bound** until the load stops. Nothing is lost or duplicated; consumers fall behind. The sends are batched (ten to a call), which lifted a publisher alone from 137 to 185 events per second, but the local broker emulator handles requests one after another and is the ceiling; real SQS was not measured ([`docs/LOAD-TEST.md`](docs/LOAD-TEST.md)).
 - **Capacity is a short, single-machine measurement:** about 470 bets per second over many wallets and about 145 on one wallet, in 20-second runs on a laptop with the generator on the same cores. Sustained load, a real network and AWS were not measured.
-- **A database outage longer than about 30 s dead-letters the messages in flight** with the default retry settings. Replaying them is safe and manual ([how](ARCHITECTURE.md#replaying-the-dead-letter-queue)).
-- **Nothing is ever deleted:** the inbox and the outbox grow with traffic. Which rows are safe to remove is in [ARCHITECTURE.md](ARCHITECTURE.md#data-retention); the job is not built.
+- **A database outage no longer dead-letters what is waiting** (the consumer stops receiving while the readiness probe fails, FR-101), but the batch in hand when it begins spends one delivery, and a message that fails while the database answers still ends in the DLQ after five. Replaying is safe and manual ([how](ARCHITECTURE.md#replaying-the-dead-letter-queue)).
+- **Retention deletes, and does not archive:** inbox rows older than 21 days and published outbox rows older than 30 are removed by a job in the publisher role; the ledger and the transactions never are. The space is reused by PostgreSQL but not returned to the system without a `VACUUM FULL`. See [ARCHITECTURE.md](ARCHITECTURE.md#data-retention).
 - **A waiting reversal is settled at its next look,** up to the current backoff after its bet arrives, and a bet that arrives after its reversal expired is applied normally (no tombstone).
 - **Events can arrive twice and out of order** within a wallet after a retry. Consumers deduplicate on `eventId` and order by `walletVersion` (IR-03).
-- **Reconciliation scans a wallet's whole ledger** and, unauthenticated, can be used to keep connections busy (T-16).
+- **Reconciliation scans a wallet's whole ledger** and is unauthenticated. At most two run at once per process (a third is a `503`), so it cannot take the pool from settlement, but it can still be used to keep two connections busy per process (T-16).
 - **Superuser tampering is undetectable:** someone who disables the triggers and edits balance and ledger consistently leaves nothing to reconcile (T-09). In Compose the application connects as a superuser.
 - **Single region, single broker, no tracing, no dashboards, no alert rules.**
 
@@ -271,7 +279,10 @@ Every required test runs against **real PostgreSQL and a real SQS emulator**, wi
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Layers, flows, schema, patterns, how to operate it, limitations |
 | [`THREAT-MODEL.md`](THREAT-MODEL.md) | What can go wrong, which test covers it, and what is not covered |
 | [`docs/adr/`](docs/adr/README.md) | Every contested decision and the option rejected |
+| [`docs/openapi.yaml`](docs/openapi.yaml) | The HTTP contract, OpenAPI 3.1 |
 | [`docs/LOAD-TEST.md`](docs/LOAD-TEST.md) | The load experiment: method, figures and what they do not show |
+| [`docs/STRESS-TEST.md`](docs/STRESS-TEST.md) | The stress scenarios: SLOs stated first, results, and what they do not show |
+| [`docs/SECURITY-SCAN.md`](docs/SECURITY-SCAN.md) | The security scan: how to run it, what it found, what was done, what it did not cover |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`RELEASING.md`](RELEASING.md) | Gitflow, commits, checks, releases |
 
 ## License
