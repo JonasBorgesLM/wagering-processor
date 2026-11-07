@@ -19,3 +19,7 @@ A publisher runs one short transaction: select due rows with `FOR UPDATE SKIP LO
 
 ## Reopening criterion
 Publication latency requirements tighter than polling allows, which would point to `LISTEN/NOTIFY` as a wake-up signal.
+
+## Amendment: what the load test showed
+
+`bun run test:load` ([`docs/LOAD-TEST.md`](../LOAD-TEST.md)): three publishers emptied a backlog at 125 to 138 events per second in total, while settlement produced about 900 per second at the spread rate, so under sustained load above roughly 65 bets per second the lag grows without bound. The decision (a lease, no transaction held while publishing) was not at fault and no event was lost or published twice by it; the limit is that each publisher sends one message at a time. The reopening criterion names latency requirements tighter than polling allows; this is a different one, **throughput**, and it is open. Sending ten per call and different wallets in parallel would keep each wallet's order.

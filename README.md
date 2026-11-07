@@ -27,7 +27,8 @@ How it was shown to work, and not only that it does: the unit suite (domain rule
 ## Known limitations
 
 - **No authentication.** Nothing identifies a caller (ADR-0009, T-03). Do not expose it.
-- **Throughput is not measured.** The lock, pool, backoff and lease defaults are judgements, each with its reasoning in ARCHITECTURE.md, and none has been checked under sustained load.
+- **Event publishing is the slowest part, and by a wide margin.** On the reference machine the three publishers send about 130 events per second while settlement can produce about 900 (two per bet), so **a sustained rate above roughly 65 bets per second grows the outbox lag without bound** until the load stops. Nothing is lost or duplicated, but downstream consumers fall behind. Batching the sends is the obvious fix and is not done. See [`docs/LOAD-TEST.md`](docs/LOAD-TEST.md).
+- **Everything else about capacity is a short, single-machine measurement.** About 470 bets per second spread over many wallets and about 145 on one wallet, in 20-second runs on a laptop with the load generator on the same cores (`bun run test:load`). Sustained load, a real network and AWS were not measured, and the defaults are judgements that the run did not contradict.
 - **A database outage longer than about 30 s dead-letters the messages in flight** with the default retry settings. Nothing is lost and replaying them is safe, but replaying is manual: there is no tool for it.
 - **A waiting reversal is settled at its next look,** up to the current backoff (5 s, doubling to 5 min) after its bet arrives, and a bet that arrives after its reversal expired is applied normally (no tombstone).
 - **Events can arrive twice and out of order** within a wallet after a retry. That is the contract (IR-03), and a consumer that ignores it will be wrong.
@@ -98,6 +99,7 @@ The reasoning behind each default, and what it does not guarantee, is in ARCHITE
 | `bun run test:unit` | Unit tests, no services needed |
 | `bun run test:integration` | Needs `docker compose up postgres sqs` |
 | `bun run test:concurrency` | Real parallel connections, and the multi-process failure suite: the eight scenarios of §13 against three or more real application processes, killed and restarted. Needs the same services; takes a few minutes |
+| `bun run test:load` | The load experiment: three processes, two scenarios, about four minutes. Writes `load-results/` and prints the figures. See [`docs/LOAD-TEST.md`](docs/LOAD-TEST.md) |
 | `bun run check:docs` | ADR index, cited requirement and threat ids, every requirement cited by a test or source file, relative links |
 | `./.github/scripts/check-instances.sh` | Needs `docker compose --profile app up -d --build --wait`: three processes behave as one system |
 

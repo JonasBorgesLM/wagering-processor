@@ -99,7 +99,7 @@ queue ───SQS────▶ [ consumer ]┘                          │
 ### T-11 — Resource exhaustion
 **Actor:** any HTTP caller. **Impact:** connection pool or lock pile-up, huge payloads.
 **Mitigation:** SR-04, FR-60, FR-64. Request bodies are capped at 16 KB, ledger pages at 200, path ids must be UUIDs, and every statement has a time limit (NFR-11).
-**Residual:** no rate limit exists. A burst on one wallet can hold every pooled connection until the lock timeout; the wait for a connection is bounded (DATABASE_ACQUIRE_TIMEOUT_MS) and a burst test shows requests end as applied, rejected or 503, but the defaults are judgements and are not measured under sustained load. Authentication is absent (SR-03), so any caller can submit for any provider.
+**Residual:** no rate limit exists. A burst on one wallet can hold every pooled connection until the lock timeout; the wait for a connection is bounded (DATABASE_ACQUIRE_TIMEOUT_MS) and a burst test shows requests end as applied, rejected or 503, but the load test (20-second runs, one machine) saw 64 callers on one wallet answered within 1.8 s and 256 callers shed 3.1 % as `503` with no lock timeout, but sustained load was not tried and the defaults remain judgements. Authentication is absent (SR-03), so any caller can submit for any provider.
 
 ### T-12 — Idempotency key squatting
 **Actor:** malicious caller. **Impact:** using a provider's future key or id makes its real operation fail as a conflict.

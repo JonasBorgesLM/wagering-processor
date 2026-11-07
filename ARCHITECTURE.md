@@ -199,7 +199,7 @@ A request needs a connection for as long as it holds a lock, and a lock can be w
 - **The pool's error is recognised by its message,** because `pg-pool` raises a bare `Error` with no code. A test provokes the real one, so an upgrade that rewords it fails there and not silently in production.
 - **So is a connection that could not be opened in time, or was closed:** the client reports `Connection terminated due to connection timeout` (opening one took longer than `DATABASE_ACQUIRE_TIMEOUT_MS`, which also bounds opening) and `Connection terminated unexpectedly`, again with no code. **The failure suite found this on the CI runner:** under 90 concurrent requests on two cores, opening new connections took over a second, and the unrecognised error was a `500` that no provider would retry. It is a `503` now. A test provokes it with a server that accepts the connection and never answers.
 - **What the burst test proves:** with four connections, a 200 ms connection wait and a 300 ms lock wait, a burst on a locked wallet ends every request as applied, rejected or `503`, never a `500` and never a hang. At most four requests ever waited on the lock, which is what shows the pool is the cap. Retrying everything with the same keys then applies each exactly once.
-- **Not measured:** how these numbers behave under sustained load. They are judgements, and the load test (`test:load`, optional) is where they would be revisited.
+- **Measured once, briefly** (`bun run test:load`, [`docs/LOAD-TEST.md`](docs/LOAD-TEST.md)): with 64 callers on one wallet the slowest answer was 1.8 s against the 2 s lock timeout and nothing timed out; with 256 callers 3.1 % were `503` from the pool, with no lock timeout. The defaults held under that load, the margin of the lock timeout was small, and sustained load was not tried.
 
 ### Publishing events
 
@@ -221,7 +221,7 @@ mark published                             (crash here: duplicate, safe through 
 - **The broker's own deduplication is an optimization.** `MessageDeduplicationId` is the outbox row's id (which is the `eventId`), so a repeat inside five minutes is dropped. After that window, or on another broker, a repeat arrives, and the consumer's `eventId` check is what holds (IR-03, NFR-05). The test asserts the repeat carries the same `eventId`.
 - **Order is not guaranteed across retries.** FIFO keeps a wallet's events in send order, but a retry can send an earlier event after a later one that was already out. `walletVersion` in `WalletBalanceChanged` is how a consumer restores the order.
 - **Stopping** waits for the round in progress (bounded by the send timeout), so what it claimed is published or put back and not left to its lease (FR-81).
-- **Not measured:** throughput. A round claims 25 rows and sends them one at a time; the defaults are judgements. `LISTEN/NOTIFY` as a wake-up is the reopening criterion of ADR-0007, not done.
+- **Measured, and it is the weak point:** a round claims 25 rows and sends them one at a time, and three publishers emptied a backlog at 125 to 138 events per second in total, against about 900 per second produced at the spread rate of the load test. A sustained rate above roughly 65 bets per second therefore grows the lag without bound ([`docs/LOAD-TEST.md`](docs/LOAD-TEST.md)). Batching the send (ten per call) and sending different wallets in parallel keep a wallet's order and are the obvious fix; neither is done. `LISTEN/NOTIFY` as a wake-up is the reopening criterion of ADR-0007, not done.
 
 ### Retrying a pending reference
 
@@ -439,11 +439,12 @@ Both are contracts with the outside, so each is pinned by a test. The hash vecto
 ## Known limitations
 
 - **No authentication.** Anyone reaching the API can act as any provider (T-06). Do not expose it.
-- **Throughput per wallet is serial** by design, and bounded by settlement time.
+- **Throughput per wallet is serial** by design, and bounded by settlement time: about 145 bets per second on one wallet in the load test.
 - **Late `BET` after an expired `ROLLBACK`** is applied, with no tombstone (REQUIREMENTS section 3.6).
 - **One reversal per reference, of any kind.** This reads the challenge's rule 7.4 more strictly than its literal text on purpose, because mixing `REFUND` and `ROLLBACK` on one `BET` would credit it twice. The owner confirmed this decision. As a consequence, `REFUND`, `ROLLBACK` of it, then `ROLLBACK` of the `BET` is refused and needs an operator (ADR-0006).
 - **Emulator, not AWS:** contract tests cover the SQS behaviour relied on, and do not prove parity with AWS (ADR-0008).
-- **Defaults are judgements, not measurements:** the lock, statement and acquire timeouts, the pool size, the backoffs, the leases and the batch sizes each have their reasoning above, and none has been checked under sustained load.
+- **Defaults are judgements that a short load test did not contradict:** the lock, statement and acquire timeouts, the pool size, the backoffs, the leases and the batch sizes each have their reasoning above; none has been checked under sustained load.
+- **Event publishing throughput is about 130 events per second** for three publishers on the reference machine, far below what settlement can produce.
 - **A database outage longer than about 30 s dead-letters what was in flight** with the default retry settings. Replaying the DLQ is safe, and manual: there is no tool for it.
 - **A waiting reversal is settled at its next look,** up to the current backoff after its bet arrives.
 - **Events are at least once and may reorder** within a wallet after a retry; consumers follow IR-03.
@@ -465,4 +466,4 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 6 | Out-of-order references worker | Done (#19) |
 | 7 | Reconciliation and observability | Done (#20, #21) |
 | 8 | Multi-process failure suite (challenge §13) | Done (#22) |
-| 9 | Final documents, optional load test, release | Documents done (#23); load test (#24) and release (#25) not started |
+| 9 | Final documents, optional load test, release | Documents (#23) and load test (#24) done; release (#25) not started |

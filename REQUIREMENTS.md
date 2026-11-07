@@ -397,4 +397,4 @@ Every event is stored in the outbox and published as this envelope. `eventType` 
 
 - Authentication implementation (§2): decision and design go in `ARCHITECTURE.md`.
 - Double-entry ledger, OpenTelemetry and dashboards (§6.4, §12): optional.
-- Load test (`bun run test:load`, §14): optional, done last if time allows.
+- Load test (`bun run test:load`, §14): optional, done; figures and their limits in `docs/LOAD-TEST.md`.
