@@ -1,8 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import type { SQSClient } from "@aws-sdk/client-sqs";
+import { SQSClient } from "@aws-sdk/client-sqs";
 import { TransientFailureError } from "../../src/wagering/application/errors";
 import { WagerQueueConsumer } from "../../src/wagering/infrastructure/messaging/wager-queue-consumer";
+import { BrokerProxy } from "../support/broker-proxy";
 import {
   deadLetterUrl,
   depth,
@@ -18,6 +19,7 @@ import {
   sqs,
   started,
 } from "../support/consumer-harness";
+import { TEST_ENV } from "../support/env";
 import { SettlementWorld } from "../support/settlement";
 
 // Requirements: FR-82, FR-83, NFR-11.
@@ -104,6 +106,7 @@ describe("a permanent failure goes to the DLQ at once", () => {
 
   test("a DLQ that cannot be written leaves the message where it is, not lost", async () => {
     const wallet = await world.openWallet("100.00");
+    let deadLetterAttempts = 0;
     const brokenDeadLetter = new Proxy(sqs, {
       get(client, property) {
         if (property !== "send") return Reflect.get(client, property);
@@ -112,6 +115,7 @@ describe("a permanent failure goes to the DLQ at once", () => {
           ...rest: unknown[]
         ) => {
           if (command.constructor.name === "SendMessageCommand" && command.input.QueueUrl === deadLetterUrl) {
+            deadLetterAttempts++;
             return Promise.reject(new Error("the DLQ is away"));
           }
           return (client.send as (...args: unknown[]) => unknown).call(client, command, ...rest);
@@ -121,8 +125,9 @@ describe("a permanent failure goes to the DLQ at once", () => {
     const consumer = started(new WagerQueueConsumer(brokenDeadLetter, spyOnUseCase().useCase, FAST));
     try {
       await send("{not json", wallet.walletId);
-      await eventually(async () => (await depth()).inFlight === 1, "the message to be received");
-      await Bun.sleep(500);
+      // Not "nothing happened after a while", which a consumer that never ran would also satisfy: the copy to the
+      // DLQ was attempted and refused, and only then is the message found still in the queue.
+      await eventually(() => deadLetterAttempts >= 1, "the consumer to try the DLQ");
       expect(await queueIsEmpty()).toBe(false);
       expect((await depth(deadLetterUrl)).visible).toBe(0);
     } finally {
@@ -196,6 +201,59 @@ describe("a transient failure is retried with a backoff (NFR-11)", () => {
       await consumer.beforeApplicationShutdown();
     }
   }, 30_000);
+});
+
+describe("with the broker away", () => {
+  test("the consumer keeps trying while it is away, and settles once it is back", async () => {
+    const wallet = await world.openWallet("100.00");
+    const proxy = BrokerProxy.start(() => false);
+    proxy.down = true;
+    const throughProxy = new SQSClient({
+      region: TEST_ENV.AWS_REGION,
+      endpoint: proxy.origin,
+      credentials: {
+        accessKeyId: TEST_ENV.AWS_ACCESS_KEY_ID,
+        secretAccessKey: TEST_ENV.AWS_SECRET_ACCESS_KEY,
+      },
+      maxAttempts: 1,
+    });
+    const { useCase, results } = spyOnUseCase();
+    const consumer = started(new WagerQueueConsumer(throughProxy, useCase, FAST));
+    try {
+      // Away from the start: it cannot even find its queues, and it keeps asking instead of giving up.
+      await eventually(() => proxy.refused >= 3, "the consumer to try the broker while it is away");
+      await send(message(wallet, { money: { amount: "10.00", currency: "BRL" } }), wallet.walletId);
+      expect(results).toEqual([]);
+
+      proxy.down = false;
+      await eventually(() => results.length === 1, "the message to settle once the broker is back", 20_000);
+      await eventually(queueIsEmpty, "the acknowledgement");
+
+      // Away again once it is running: receiving fails, and it recovers the same way.
+      proxy.down = true;
+      const refusedBefore = proxy.refused;
+      await eventually(
+        () => proxy.refused >= refusedBefore + 2,
+        "receiving to fail while the broker is away",
+      );
+      await send(message(wallet, { money: { amount: "20.00", currency: "BRL" } }), wallet.walletId);
+      proxy.down = false;
+      await eventually(
+        () => results.length === 2,
+        "the second message to settle after the second outage",
+        20_000,
+      );
+      await eventually(queueIsEmpty, "the second acknowledgement");
+
+      expect(await world.walletState(wallet.walletId)).toEqual({ balance: "70.00", version: 3 });
+      await world.expectLedgerExplainsBalance(wallet.walletId);
+    } finally {
+      proxy.down = false;
+      await consumer.beforeApplicationShutdown();
+      throughProxy.destroy();
+      proxy.stop();
+    }
+  }, 60_000);
 });
 
 describe("with PostgreSQL really stopped", () => {

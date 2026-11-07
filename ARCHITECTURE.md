@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: feature complete, awaiting release.** Every section below describes code that exists and is tested; where something is a judgement rather than a measurement, or is not provided, it says so, and the [limitations](#known-limitations) are in one place.
+> **Status: v1.0.0.** Every section below describes code that exists and is tested; where something is a judgement rather than a measurement, or is not provided, it says so, and the [limitations](#known-limitations) are in one place.
 
 ---
 
@@ -116,6 +116,8 @@ type SettlementDecision =
   | { outcome: "wait-reference"; observedBalance: Money };
 // REFERENCE_NOT_FOUND is never returned here: a missing reference waits, and only the worker rejects it, on expiry (FR-42).
 ```
+
+**The inbox and the outbox are not domain classes** ([ADR-0013](docs/adr/0013-inbox-and-outbox-are-rows-not-domain-classes.md)). The challenge sketches `InboxMessage` and `OutboxMessage` (§6.5); here they are rows written by the use case, because every guarantee they carry (written with the effect, two deliveries waiting for each other, one publisher per row) is a property of the statement that writes or claims them, and an object would be a weaker copy of it. The integration event they store is a domain class.
 
 **A rejection is a value, not an exception.** It must commit along with its inbox row and event. An exception would invite a rollback, and the rejection would vanish. Exceptions are for programming errors and infrastructure failures, which should roll back.
 
@@ -422,6 +424,33 @@ Both are contracts with the outside, so each is pinned by a test. The hash vecto
 - **Integration events** (`wagering-events.ts`) extend an abstract `IntegrationEvent<T>` whose `eventType` and `version` belong to the class. The payload is frozen and holds plain JSON only. Their shape is REQUIREMENTS section 3.12.1.
 - **The payload hash** (`application/payload-hash.ts`) sits in `application` rather than `domain` because it needs `node:crypto` and the domain imports only itself. It is where HTTP and SQS converge, which is the reason it exists: the same operation must hash the same over both.
 
+## Operating it
+
+What an operator needs and the code does not do for them.
+
+### Replaying the dead-letter queue
+
+A message in `wager-transactions-dlq.fifo` carries its original body unchanged, and three attributes: `FailureKind` (`permanent` or `attempts-exhausted`), `FailureReason` (the error, in full, which can include the key and ids the sender sent) and `Receives`.
+
+1. **Read the reason before replaying.** A `permanent` failure replayed unchanged fails the same way: fix the cause first (the wallet exists now, the payload was corrected upstream). An `attempts-exhausted` one usually needs only the dependency back.
+2. **Send the body back to `wager-transactions.fifo`**, with the same `MessageGroupId` (the wallet id, so the wallet's order holds) and a **new `MessageDeduplicationId`**: within five minutes the broker drops a repeat of the old one.
+3. **Replaying is safe however often it is done.** A dead-lettered message left no inbox row, because the transaction that would have written it rolled back, so the replay is settled normally; and if the operation was in fact applied by another path, the idempotency key answers it as a replay and changes nothing.
+4. **Then delete it from the DLQ.**
+
+There is no tool for this; it is a few calls of the SQS API. The broker's own redrive (`StartMessageMoveTask`) would do steps 2 and 4, where the broker supports it for FIFO queues; it was not tried against the emulator.
+
+### Data retention
+
+**Nothing is ever deleted**, and two tables grow with traffic: `inbox_messages` (one row per settled queue message) and `outbox_messages` (one row per event, published or not). The ledger and the transactions are the record and are kept by design.
+
+- An inbox row is needed only while the same message can still arrive: the queue's retention (four days by default, fourteen at most) plus however long a message may sit in the DLQ before a replay. Deleting older rows is safe for that reason, and only for that reason.
+- A published outbox row is needed by nobody once it is out, except as an audit of what was sent; the lag and backlog queries read only the unpublished rows, through a partial index, so the published ones cost storage and not speed.
+- A retention job would be a periodic `DELETE` by age on each, in batches. It is not built, so on a long-running system both tables must be watched.
+
+### Consuming the events
+
+Events go to `wagering-events.fifo`, one message per event, with the wallet as `MessageGroupId` and the `eventId` as `MessageDeduplicationId`. The envelope and each event's `data` are specified in REQUIREMENTS section 3.12.1, and versioned by `version` (FR-94). **A consumer must deduplicate on `eventId` and order a wallet's balance changes by `walletVersion`** (IR-03): delivery is at least once, and a retry can send an earlier event after a later one.
+
 ## Decisions the challenge asks to justify
 
 | Topic | Choice | Record |
@@ -433,6 +462,7 @@ Both are contracts with the outside, so each is pinned by a test. The hash vecto
 | Reversals | One processed reversal per reference | [ADR-0006](docs/adr/0006-one-processed-reversal-per-reference.md) |
 | Outbox | Lease claim | [ADR-0007](docs/adr/0007-outbox-claims-with-a-lease.md) |
 | HTTP settles synchronously | The response is the settlement | [ADR-0010](docs/adr/0010-http-settles-synchronously.md) |
+| Inbox and outbox | Rows written by the use case, claimed by statements | [ADR-0013](docs/adr/0013-inbox-and-outbox-are-rows-not-domain-classes.md) |
 | Errors | One envelope, one mapping | [ADR-0012](docs/adr/0012-errors-are-one-envelope-with-one-mapping.md) |
 | Authentication | Not implemented, extension point documented | [ADR-0009](docs/adr/0009-authentication-is-a-documented-extension-point.md) |
 
@@ -449,6 +479,8 @@ Both are contracts with the outside, so each is pinned by a test. The hash vecto
 - **A waiting reversal is settled at its next look,** up to the current backoff after its bet arrives.
 - **Events are at least once and may reorder** within a wallet after a retry; consumers follow IR-03.
 - **Reconciliation scans the whole ledger of the wallet** it is asked about.
+- **No data retention:** the inbox and the outbox grow without bound (see Operating it).
+- **Replaying the DLQ is manual,** a few SQS calls, described in Operating it.
 - **The failure suite's kill points are the ones it finds** (a held acknowledgement, a held publish, held locks), not an arbitrary instruction.
 
 ## Roadmap
@@ -466,4 +498,4 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 6 | Out-of-order references worker | Done (#19) |
 | 7 | Reconciliation and observability | Done (#20, #21) |
 | 8 | Multi-process failure suite (challenge §13) | Done (#22) |
-| 9 | Final documents, optional load test, release | Documents (#23) and load test (#24) done; release (#25) not started |
+| 9 | Final documents, optional load test, release | Done (#23, #24, #25): v1.0.0 |

@@ -14,8 +14,9 @@ import { brl, T0 } from "../../support/domain-fixtures";
 // The worked sequence of REQUIREMENTS section 3.3.1, run end to end through the domain: each line
 // continues from the one before it, and the balance after every line is checked.
 //
-// The harness below does what the settlement use case will do, in memory, so the rules are proven
-// before any database exists. It is a stand-in: locking, the inbox and the outbox are issue #12's.
+// The harness below does in memory what the settlement use case does, so the rules are proven with no
+// database at all. It is a stand-in: locking, the inbox and the outbox are the use case's, and their tests are
+// in test/integration and test/concurrency.
 
 const PROVIDER = "provider-a";
 
@@ -300,7 +301,7 @@ describe("the worked REFUND and ROLLBACK sequence (REQUIREMENTS section 3.3.1)",
     world.submit("b1", Kind.Bet, "80.00");
     expect(world.wallet.balance.toJSON().amount).toBe("20.00");
 
-    // What the retry worker will do: the same decision again, now with the reference present.
+    // What the reference worker does: the same decision again, now with the reference present.
     const retried = decideSettlement({
       transaction: waiting,
       wallet: world.wallet,

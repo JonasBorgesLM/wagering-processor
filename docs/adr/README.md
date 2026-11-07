@@ -22,17 +22,20 @@ New records start from [`TEMPLATE.md`](TEMPLATE.md).
 | [`0010`](0010-http-settles-synchronously.md) | HTTP submissions settle synchronously | Accepted | — |
 | [`0011`](0011-typescript-stays-on-6-until-tooling-supports-7.md) | TypeScript stays on 6 until the boundary check supports 7 | Accepted | — |
 | [`0012`](0012-errors-are-one-envelope-with-one-mapping.md) | Errors are one envelope with one mapping, applied at two places | Accepted | — |
+| [`0013`](0013-inbox-and-outbox-are-rows-not-domain-classes.md) | The inbox and the outbox are rows written by the use case, not domain classes | Accepted (recorded after the code) | — |
 
 ## Reopening criteria on the record
 
 | ADR | Reopen when |
 | --- | --- |
-| `0003` | Load tests show a realistic hot wallet exhausting the pool |
+| `0003` | Load tests show a realistic hot wallet exhausting the pool (the load test of #24 could not decide it: no contract rate) |
+| `0007` | Publication latency tighter than polling allows; and, open since the load test, publication throughput below settlement |
 | `0006` | A provider contract requires re-reversal |
 | `0008` | A contract test fails on MiniStack |
 | `0009` | All mandatory tests pass with time left, or any deployment leaves a private network |
 | `0011` | `dependency-cruiser` analyses modules under TypeScript 7 |
 | `0012` | A provider or gateway requires `application/problem+json`, or a second platform endpoint needs the envelope |
+| `0013` | A rule about an inbox or outbox row that is not a property of the statement that writes it |
 
 ## Open questions
 

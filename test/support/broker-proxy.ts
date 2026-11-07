@@ -16,6 +16,10 @@ export interface HeldRequest {
  */
 export class BrokerProxy {
   readonly held: HeldRequest[] = [];
+  /** While true, every request is refused as a broker that is away would refuse it. */
+  down = false;
+  /** How many requests were refused while down: the proof that the client really tried. */
+  refused = 0;
   private readonly server: ReturnType<typeof Bun.serve>;
 
   private constructor(private readonly shouldHold: (request: HeldRequest) => boolean) {
@@ -30,6 +34,17 @@ export class BrokerProxy {
         const body = text
           ? (JSON.parse(text.replaceAll(this.origin, upstream)) as Record<string, unknown>)
           : {};
+
+        if (this.down) {
+          this.refused++;
+          return new Response(
+            JSON.stringify({ __type: "ServiceUnavailable", message: "the broker is away" }),
+            {
+              status: 503,
+              headers: { "content-type": "application/x-amz-json-1.0" },
+            },
+          );
+        }
 
         if (this.shouldHold({ action, body })) {
           this.held.push({ action, body });
