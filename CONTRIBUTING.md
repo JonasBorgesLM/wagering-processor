@@ -10,6 +10,7 @@ bun run lint
 bun run test:unit
 bun run test:integration   # needs: docker compose up -d --wait postgres sqs
 bun run test:concurrency   # the same services; includes the multi-process failure suite, a few minutes
+bun run test:mutation      # the same services; removes each protection in turn and fails if no test notices. Tens of minutes
 bun run check:docs
 ```
 
@@ -68,7 +69,7 @@ Refs FR-22
 ## Tests
 
 - Real PostgreSQL and SQS for integration and concurrency tests. A test that replaces them does not count.
-- A test guarding an invariant is removed from its protection once, seen red, then restored. There is no mechanical check for this, so it is a review question on the PR template.
+- A test guarding an invariant is removed from its protection once, seen red, then restored. For the protections listed in `test/mutation/mutants.ts` that is now mechanical (`bun run test:mutation`, weekly in CI): add a mutant there when you add a protection, with an exact string that occurs once in one file and the tests that must go red. For anything else it is still a review question on the PR template.
 - Assert the expected answer, not the absence of a wrong one.
 - Every test finishing on wallet state also asserts `balance == ledger rebuild`.
 
