@@ -123,8 +123,8 @@ queue ───SQS────▶ [ consumer ]┘                          │
 
 ### T-16 — An expensive read used as a lever
 **Actor:** any HTTP caller. **Impact:** `POST /wallets/:walletId/reconciliation` reads a wallet's whole ledger in one statement; a few concurrent calls on a large wallet hold pooled connections for up to the statement timeout (5 s) and delay settlement on the same process.
-**Mitigation:** the statement timeout bounds each call, and the read takes no lock, so it cannot block a wallet directly.
-**Residual:** no rate limit and no authentication (SR-03). The ledger page is bounded (200 entries) and is not a lever; the reconciliation is.
+**Mitigation:** the statement timeout bounds each call, the read takes no lock, so it cannot block a wallet directly, and at most `RECONCILIATION_MAX_CONCURRENT` (2) run at once per process; one over is a `503` at once (FR-102), so the pool keeps its other connections for settlement.
+**Residual:** no rate limit and no authentication (SR-03). Two reconciliations per process can still be held busy for the statement timeout each, and the bound is per process, so N processes allow N times as many. The cost of each call still grows with the ledger. The ledger page is bounded (200 entries) and is not a lever; the reconciliation is.
 
 ### T-17 — A JSON response used as something else
 **Actor:** a browser, a shared cache. **Impact:** a body sniffed as a script or markup, a page framed, an id leaked in a `Referer`, a balance kept by a cache.
@@ -150,7 +150,7 @@ queue ───SQS────▶ [ consumer ]┘                          │
 | T-13 | NFR-10 |
 | T-14 | FR-91, NFR-06 |
 | T-15 | none |
-| T-16 | FR-71, NFR-11 |
+| T-16 | FR-71, FR-102, NFR-11 |
 | T-17 | FR-100, FR-65 |
 
 SR-02 is hardening: it keeps T-05 true on the queue path.
@@ -176,7 +176,8 @@ What each mitigation is tested by, and whether the protection was removed to see
 | T-17 response hardening | `unit/http/security-headers.test.ts`, `integration/openapi.test.ts` (every kind of answer), the warden scan (28 findings before, 7 after, all HSTS over HTTP) | the middleware removed, and its old position after the body parser |
 | T-11 exhaustion, under stress | `./scripts/stress.sh` ([`docs/STRESS-TEST.md`](docs/STRESS-TEST.md)): spike, ramp-up, soak and a database outage, no `500`, books reconciled (measured, not a CI gate) | not applicable: a measurement |
 | T-14 delivery behind | `bun run test:load` (measured, not asserted) | not applicable: a measurement |
-| T-15, T-16 | none: not mitigated | not applicable |
+| T-16 expensive read | `unit/application/reconcile-wallet.test.ts` (the bound, the release on success and on failure), `integration/reconciliation.test.ts` (a held pool: settlement is not starved) | the bound removed (settlement could not get a connection); the release removed |
+| T-15 | none: not mitigated | not applicable |
 
 ## 7. Explicitly not addressed
 

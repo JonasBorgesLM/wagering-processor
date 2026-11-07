@@ -137,6 +137,7 @@ All through environment variables; `.env.example` has the defaults and a bad val
 | `SHUTDOWN_TIMEOUT_MS` | 25000 | how long a stopping process may take before it exits 1 |
 | `LOCK_TIMEOUT_MS`, `STATEMENT_TIMEOUT_MS` | 2000, 5000 | the wait for a wallet lock; the longest any statement may run |
 | `DATABASE_POOL_MAX`, `DATABASE_ACQUIRE_TIMEOUT_MS` | 10, 1000 | connections per process; the wait to get or open one |
+| `RECONCILIATION_MAX_CONCURRENT` | 2 | reconciliations running at once in a process; one over is a `503` (FR-102) |
 | `QUEUE_WAIT_SECONDS` | 5 | one poll of the input queue, and so the longest stopping the consumer can take |
 | `QUEUE_BACKOFF_BASE_SECONDS`, `QUEUE_BACKOFF_CAP_SECONDS` | 2, 30 | the wait before a failed message is delivered again |
 | `OUTBOX_POLL_INTERVAL_MS`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE_MS` | 500, 100, 30000 | how the publisher polls, how many rows it claims a round (sent ten to a call) and how long a claim is held |
@@ -264,7 +265,7 @@ Every required test runs against **real PostgreSQL and a real SQS emulator**, wi
 - **Nothing is ever deleted:** the inbox and the outbox grow with traffic. Which rows are safe to remove is in [ARCHITECTURE.md](ARCHITECTURE.md#data-retention); the job is not built.
 - **A waiting reversal is settled at its next look,** up to the current backoff after its bet arrives, and a bet that arrives after its reversal expired is applied normally (no tombstone).
 - **Events can arrive twice and out of order** within a wallet after a retry. Consumers deduplicate on `eventId` and order by `walletVersion` (IR-03).
-- **Reconciliation scans a wallet's whole ledger** and, unauthenticated, can be used to keep connections busy (T-16).
+- **Reconciliation scans a wallet's whole ledger** and is unauthenticated. At most two run at once per process (a third is a `503`), so it cannot take the pool from settlement, but it can still be used to keep two connections busy per process (T-16).
 - **Superuser tampering is undetectable:** someone who disables the triggers and edits balance and ledger consistently leaves nothing to reconcile (T-09). In Compose the application connects as a superuser.
 - **Single region, single broker, no tracing, no dashboards, no alert rules.**
 
