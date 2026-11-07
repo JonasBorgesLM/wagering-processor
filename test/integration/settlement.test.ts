@@ -54,6 +54,7 @@ describe("outcomes", () => {
     expect(result.status).toBe(Status.Processed);
     expect(result.balance?.toString()).toBe("100.00 BRL");
     expect(await world.walletState(wallet.walletId)).toEqual({ balance: "100.00", version: 1 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
     expect(await world.counts(wallet.walletId)).toEqual({ transactions: 1, entries: 0, events: 1 });
   });
 
@@ -64,6 +65,7 @@ describe("outcomes", () => {
     expect(result).toMatchObject({ status: Status.Rejected, failureCode: "INSUFFICIENT_FUNDS" });
     expect(result.balance?.toString()).toBe("10.00 BRL");
     expect(await world.walletState(wallet.walletId)).toEqual({ balance: "10.00", version: 1 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
     expect(await world.counts(wallet.walletId)).toEqual({ transactions: 1, entries: 0, events: 1 });
     const [row] = await world.sql("select event_type from outbox_messages where aggregate_id = ?", [
       wallet.walletId,
@@ -194,6 +196,7 @@ describe("a provider's ids are its own (FR-26)", () => {
     );
     expect(other).toMatchObject({ status: Status.Processed, idempotentReplay: false });
     expect((await world.walletState(wallet.walletId)).balance).toBe("97.00");
+    await world.expectLedgerExplainsBalance(wallet.walletId);
   });
 
   test("a reversal cannot find another provider's transaction, so it waits", async () => {
@@ -209,6 +212,7 @@ describe("a provider's ids are its own (FR-26)", () => {
     );
     expect(refund.status).toBe(Status.PendingReference);
     expect((await world.walletState(wallet.walletId)).balance).toBe("20.00");
+    await world.expectLedgerExplainsBalance(wallet.walletId);
   });
 });
 
@@ -238,6 +242,7 @@ describe("idempotency", () => {
     expect(replay.idempotentReplay).toBe(true);
     expect(replay.transactionId).toBe(original.transactionId);
     expect(await world.walletState(wallet.walletId)).toEqual({ balance: "20.00", version: 2 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
     expect(await world.counts(wallet.walletId)).toEqual(before);
   });
 
@@ -248,6 +253,7 @@ describe("idempotency", () => {
     await world.useCase.execute(bet);
     await world.useCase.execute(command(wallet, { money: brl("30.00") }));
     expect((await world.walletState(wallet.walletId)).balance).toBe("60.00");
+    await world.expectLedgerExplainsBalance(wallet.walletId);
     expect((await world.useCase.execute(bet)).balance?.toString()).toBe("90.00 BRL");
   });
 
@@ -283,6 +289,7 @@ describe("idempotency", () => {
       IdempotencyConflictError,
     );
     expect((await world.walletState(wallet.walletId)).balance).toBe("20.00");
+    await world.expectLedgerExplainsBalance(wallet.walletId);
   });
 
   test("the same operation under another key is a conflict (FR-54)", async () => {
