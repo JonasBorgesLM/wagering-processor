@@ -46,6 +46,8 @@ Strict GitOps, where an agent reconciles a running environment from Git, does no
 
 ## Documentation
 
+A change to a route, a body or a status updates `docs/openapi.yaml` in the same pull request; `test/integration/openapi.test.ts` fails when it does not.
+
 A change to behaviour updates its documents in the same pull request. CI fails when `src` or `migrations` change with no document touched, unless the PR is labelled `no-docs-needed` (NFR-12). Status lines in `README.md` and `ARCHITECTURE.md` must say what the code does today, not what is planned.
 
 ## Commits

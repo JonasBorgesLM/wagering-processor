@@ -164,6 +164,8 @@ The reasoning behind each default, and what it does not guarantee, is in ARCHITE
 
 Wallets and transactions are reachable over HTTP. **Nothing authenticates a caller yet** (ADR-0009), so do not expose it.
 
+The machine-readable contract is [`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI 3.1): every route, request body, header and status, with examples. A test keeps it true: it fails when a route is served that the spec lacks, or listed that is not served, when an example does not fit its own schema, and when a real answer does not fit the schema the spec declares for its status.
+
 | Request | Answer |
 | --- | --- |
 | `POST /wallets` | `201` and the wallet; `409` if the player already has one in that currency |
@@ -271,6 +273,7 @@ Every required test runs against **real PostgreSQL and a real SQS emulator**, wi
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Layers, flows, schema, patterns, how to operate it, limitations |
 | [`THREAT-MODEL.md`](THREAT-MODEL.md) | What can go wrong, which test covers it, and what is not covered |
 | [`docs/adr/`](docs/adr/README.md) | Every contested decision and the option rejected |
+| [`docs/openapi.yaml`](docs/openapi.yaml) | The HTTP contract, OpenAPI 3.1 |
 | [`docs/LOAD-TEST.md`](docs/LOAD-TEST.md) | The load experiment: method, figures and what they do not show |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`RELEASING.md`](RELEASING.md) | Gitflow, commits, checks, releases |
 
