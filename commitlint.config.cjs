@@ -1,3 +1,4 @@
+// NFR-08: all project text, code and commits are in English, in Conventional Commits form, checked on every commit and on the PR title.
 // Scopes are this project's modules. The same list is enforced in CI through this file.
 module.exports = {
   extends: ["@commitlint/config-conventional"],

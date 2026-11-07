@@ -5,6 +5,8 @@ import { GUARDS_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { ProviderAuthGuard } from "../../../src/wagering/infrastructure/http/provider-auth.guard";
 import { BUSINESS_CONTROLLERS, WageringModule } from "../../../src/wagering/infrastructure/wagering.module";
 
+// Requirements: FR-73.
+
 // ADR-0009: authentication is not implemented, and its place is. What would make that place worthless is a
 // controller added without the guard, so this finds every controller in the code and checks each one.
 

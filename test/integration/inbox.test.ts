@@ -7,6 +7,7 @@ import {
 } from "../../src/wagering/domain/wager-transaction";
 import { brl, command, instrumented, SettlementWorld } from "../support/settlement";
 
+// Requirements: FR-77, NFR-04, NFR-05, INT-17.
 // The inbox is written in the transaction that settles the message, so these run the real use case on a real
 // database (NFR-04, NFR-05, §10).
 

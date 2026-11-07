@@ -1,8 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { IdempotencyConflictError } from "../../src/wagering/application/errors";
-import { WagerTransactionStatus as Status } from "../../src/wagering/domain/wager-transaction";
+import {
+  WagerTransactionKind as Kind,
+  WagerTransactionStatus as Status,
+} from "../../src/wagering/domain/wager-transaction";
 import { brl, command, deferred, instrumented, SettlementWorld } from "../support/settlement";
+
+// Requirements: FR-22, FR-28, FR-29, NFR-03.
 
 // Real connections doing real work at once. Where order matters, barriers decide it rather than sleeps,
 // so a pass means the behaviour and not a lucky schedule. Separate processes are the failure suite's (#22).
@@ -138,6 +143,73 @@ describe("the unit of concurrency is the wallet (§8)", () => {
       expect((await world.walletState(wallet.walletId)).balance).toBe("20.00");
       await world.expectLedgerExplainsBalance(wallet.walletId);
     }
+  });
+});
+
+describe("one bet reversed many times at once (FR-22, FR-29, ADR-0006)", () => {
+  test("twenty refunds and rollbacks: one applies, the rest are ALREADY_REVERSED, the stake returns once", async () => {
+    const wallet = await world.openWallet("100.00");
+    const bet = command(wallet, { money: brl("80.00") });
+    await world.useCase.execute(bet);
+
+    const reversals = Array.from({ length: 20 }, (_, i) =>
+      command(wallet, {
+        kind: i % 2 === 0 ? Kind.Refund : Kind.Rollback,
+        money: brl("80.00"),
+        referenceExternalTransactionId: bet.externalTransactionId,
+      }),
+    );
+    const results = await Promise.all(reversals.map((reversal) => world.useCase.execute(reversal)));
+
+    expect(results.filter((result) => result.status === Status.Processed)).toHaveLength(1);
+    const refused = results.filter((result) => result.status === Status.Rejected);
+    expect(refused).toHaveLength(19);
+    expect(refused.every((result) => result.failureCode === "ALREADY_REVERSED")).toBe(true);
+    // 100 - 80 + 80, once. A second credit would show as 180.00.
+    expect(await world.walletState(wallet.walletId)).toEqual({ balance: "100.00", version: 3 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
+  });
+});
+
+describe("reversals do not cascade (FR-28)", () => {
+  test("reversing a bet leaves its win, and rolling back the refund does not make the bet reversible again", async () => {
+    const wallet = await world.openWallet("100.00");
+    const bet = command(wallet, { money: brl("80.00") });
+    await world.useCase.execute(bet);
+    const win = command(wallet, {
+      kind: Kind.Win,
+      money: brl("10.00"),
+      referenceExternalTransactionId: bet.externalTransactionId,
+    });
+    await world.useCase.execute(win);
+
+    const refund = command(wallet, {
+      kind: Kind.Refund,
+      money: brl("80.00"),
+      referenceExternalTransactionId: bet.externalTransactionId,
+    });
+    expect((await world.useCase.execute(refund)).status).toBe(Status.Processed);
+    // 100 - 80 + 10 (win, still there) + 80 (refund)
+    expect((await world.walletState(wallet.walletId)).balance).toBe("110.00");
+
+    const undoRefund = command(wallet, {
+      kind: Kind.Rollback,
+      money: brl("80.00"),
+      referenceExternalTransactionId: refund.externalTransactionId,
+    });
+    expect((await world.useCase.execute(undoRefund)).status).toBe(Status.Processed);
+    expect((await world.walletState(wallet.walletId)).balance).toBe("30.00");
+
+    const again = await world.useCase.execute(
+      command(wallet, {
+        kind: Kind.Refund,
+        money: brl("80.00"),
+        referenceExternalTransactionId: bet.externalTransactionId,
+      }),
+    );
+    expect(again).toMatchObject({ status: Status.Rejected, failureCode: "ALREADY_REVERSED" });
+    expect((await world.walletState(wallet.walletId)).balance).toBe("30.00");
+    await world.expectLedgerExplainsBalance(wallet.walletId);
   });
 });
 

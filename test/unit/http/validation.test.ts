@@ -6,6 +6,8 @@ import {
   parseWalletId,
 } from "../../../src/wagering/infrastructure/http/validation";
 
+// Requirements: FR-64.
+
 const PLAYER = "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1";
 const valid = { playerId: PLAYER, initialBalance: { amount: "1000.00", currency: "BRL" } };
 

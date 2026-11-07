@@ -4,36 +4,39 @@ A distributed financial service that applies betting operations from game provid
 
 Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge).
 
-> **Status: early.** The runtime, tooling, CI, documents, `Money`, `Wallet`, the ledger entry, the transaction lifecycle, the settlement rules, the integration events, the payload hash, the database schema, the persistence mappers, the settlement use case, the HTTP API, the queue consumer and the outbox publisher are in place. The remaining metrics, the failure suite and the final documents are still to come. See the [roadmap](ARCHITECTURE.md#roadmap).
+> **Status: feature complete, awaiting release.** Everything the challenge asks for is implemented and tested against real PostgreSQL and a real SQS emulator, including a failure suite with real processes. What is **not** here is listed under [Known limitations](#known-limitations), and it matters: read it before relying on this.
 
 ---
 
-## What works today
+## What it does
 
-- The application boots on Bun with NestJS and MikroORM, as several instances selected by role.
-- `GET /health/live` and `GET /health/ready`, with real PostgreSQL and SQS checks, and `GET /metrics`.
-- `SIGTERM` drains: readiness reports `draining`, the consumer stops polling, finishes the message in hand within `SHUTDOWN_TIMEOUT_MS`, and gives the rest back to the queue at once. Past the deadline the process exits 1 and the queue's visibility timeout returns what was unacknowledged. Tested on the real process with a message in flight.
-- Structured JSON logs with an allowlist of fields.
-- `Money`: exact `bigint` arithmetic with strict contract parsing and no rounding path.
-- `Wallet` and `WalletLedgerEntry`: a balance that cannot go negative, whose every change returns the entry that records it, and an entry that cannot be built unbalanced or changed afterwards. These are domain classes only; nothing stores them yet.
-- Integration events (`WagerTransactionProcessed`, `Rejected`, `PendingReference`, `WalletBalanceChanged`) with a versioned, frozen, plain-JSON payload, and `payloadHash`, the SHA-256 of a canonical JSON that makes one operation hash the same over HTTP and SQS. The hash is pinned by vectors computed with Python, and the events by their expected JSON written out in the tests. Nothing publishes or stores them yet.
-- `decideSettlement`: the rules that choose an outcome for an operation (apply, reject with a stable code, or wait for its reference), as a pure function with no I/O. Nothing runs it against a database yet.
-- `WagerTransaction`: the lifecycle of an operation, where `PROCESSED`, `REJECTED` and `FAILED` are terminal and every other move is refused. It cannot be made into an `OPENING` through the submit path. 
-- The database schema in a reversible migration, with uniqueness, non-negative balances, the single-reversal rule and the ledger's arithmetic enforced by constraints, each tested in raw SQL. Triggers make the ledger append-only and settled transactions final. Nothing writes to these tables yet.
-- Persistence records and mappers between the domain and the tables, tested through a real PostgreSQL round trip with amounts beyond what a double holds. Nothing uses them yet: the settlement use case that reads and writes through them is next.
-- The layer rules are tested by breaking each one on purpose, not only by running the checker on code that obeys them.
-- The HTTP API: wallets, bets and reads of a transaction, with the idempotency header, one error envelope, a body limit and correlation ids, tested end to end against a real database with real parallelism, and checked across three processes. See the API section below.
-- Settlement: `SubmitWagerTransaction` takes the wallet lock, answers replays and conflicts, and commits the transaction, balance, ledger entry and events together, tested with real parallel connections on PostgreSQL. The `publisher` role then sends the stored events to `wagering-events.fifo`.
-- The SQS consumer (`consumer` role): it reads `wager-transactions.fifo`, validates a message with the rules of the HTTP body, settles it with the same use case, and deletes it only after the commit. The inbox row is written in the settling transaction, so a rollback takes it too. Tested against the real broker, including a worker that commits and dies before acknowledging: the redelivery changes nothing. A permanent failure goes to the DLQ at once with its reason; a transient one is retried with a jittered, growing backoff and goes to the DLQ after 5 deliveries. Tested with PostgreSQL really stopped. **An outage longer than about 30 s with the defaults dead-letters what was in flight** (safe to replay, but manual).
-- The outbox publisher (`publisher` role): claims due rows with a lease (`FOR UPDATE SKIP LOCKED`, one statement), publishes outside any transaction to `wagering-events.fifo` (group = wallet, deduplication id = `eventId`), then marks the row. Tested with several publishers at once (every event sent once), a publisher that dies after claiming (another takes the rows when the lease ends), a broker that is away (rows back off, none lost, publish when it returns), a crash between publishing and marking (published again under the same `eventId`), and as a real process that drains on `SIGTERM`. **Delivery is at least once:** a consumer of the events must deduplicate on `eventId` and order by `walletVersion`.
-- The pending-reference worker (`reference-worker` role): a `REFUND` or `ROLLBACK` that arrives before its bet waits, with its schedule on the row, and is settled at a later look by running the same settlement order under the wallet lock. After the TTL (1 h by default) it is rejected `REFERENCE_NOT_FOUND` and an event says so. A reversal waiting on another waiting reversal keeps waiting. Tested with 60 waiting reversals across 4 workers (each claimed and settled once) and as a real process. **A waiting reversal is settled at its next look, up to the current backoff after its bet arrives, and a bet that arrives after the reversal expired is applied normally (no tombstone).**
-- Reconciliation (`POST /wallets/:walletId/reconciliation`): compares the stored balance with the ledger, and checks that every entry adds up, is in the wallet's currency and continues the one before. One statement, so it is a single snapshot, and no lock, so a busy wallet is not stalled. A divergence is flagged in the response, logged as an error with the wallet, and counted (`wagering_reconciliations_total{result="divergent"}`); **it is never corrected.** Tested with divergences injected through SQL, with a held wallet lock, and against 80 bets committing during 60 checks.
-- Metrics and correlated logs, described under Observability below.
-- The failure suite (`test/concurrency/multiprocess.test.ts`): the eight mandatory scenarios of §13 with real processes, ending each on `balance == ledger rebuild`. A process is killed at a state the test has found, not at a moment it hoped for: an acknowledgement or a publish held at a proxy in front of the real broker, a wallet lock the test holds. Seven protections were removed once each and seen red (see ARCHITECTURE.md).
-- Not done yet: the final documents and the release, described in [Patterns](ARCHITECTURE.md#patterns).
-- Contract tests on what the design relies on: row-lock serialization, the deadlock that fixes the lock order, exact `NUMERIC` strings, reversible migrations, FIFO group hold, deduplication, visibility and DLQ redrive.
+A provider sends `BET`, `WIN`, `LOSS`, `REFUND` and `ROLLBACK` operations over HTTP or through an SQS queue. Each one is applied to a player's wallet exactly once, however many times it is sent, in whatever order, through whichever of several instances. Every balance change has a ledger entry, and the stored balance always equals what the ledger rebuilds.
 
-**Not verified yet:** draining while a worker is in the middle of a settlement (the process test signals an idle worker). The consumer's, the publisher's and the reference worker's stop paths are tested; stopping waits for the poll in progress, at most `QUEUE_WAIT_SECONDS`.
+- **Money is exact.** `Money` holds a `bigint` of minor units, parses only `"25.00"`-shaped strings and has no rounding path.
+- **The database is the last defence.** Uniqueness of the idempotency key and of the provider's own id, non-negative balances, the single-reversal rule, the ledger's arithmetic, and append-only triggers are constraints, each tested in raw SQL. A bug in the code cannot overdraw a wallet or debit twice.
+- **One transaction per operation, under a lock on the wallet row.** The operation, the balance, the ledger entry, the inbox row and the events commit together; responding, acknowledging and publishing happen after the commit and are safe to repeat.
+- **HTTP and SQS are the same use case.** The consumer validates a message with the rules of the HTTP body, records it in a persistent inbox, deletes it only after the commit, retries a transient failure with a jittered backoff and sends a permanent one, or one out of attempts, to the DLQ with its reason.
+- **Events go through an outbox.** A publisher claims rows with a lease (`FOR UPDATE SKIP LOCKED`), publishes outside any transaction to `wagering-events.fifo` and marks them. Delivery is at least once: consumers deduplicate on `eventId` and order by `walletVersion`.
+- **A reversal can arrive before its bet.** It waits with its schedule on the row, a worker settles it when the bet is there, and after the TTL (1 h) it is rejected `REFERENCE_NOT_FOUND`.
+- **Reconciliation** compares the stored balance with the ledger in one snapshot, without a lock, and flags a divergence in the response, the log and a metric. It never corrects.
+- **It stops cleanly.** On `SIGTERM` readiness reports `draining`, the consumer finishes the message in hand and gives the rest back to the queue, and the publisher and the reference worker finish their round.
+- **It is observable.** JSON logs with correlation fields and no payload, Prometheus metrics for every item of the challenge, liveness and readiness.
+
+How it was shown to work, and not only that it does: the unit suite (domain rules, the order of the settlement checks by swapping each pair), the integration suite (constraints, atomicity, inbox, outbox, retry and DLQ with PostgreSQL really stopped), and a failure suite that runs the eight mandatory scenarios of the challenge against three or more real processes, kills them at states the test has found (an acknowledgement or a publish held at a proxy in front of the real broker, a wallet lock the test holds) and ends every test on `balance == ledger rebuild`. Protections were removed once each and the suite seen red; ARCHITECTURE.md lists them.
+
+## Known limitations
+
+- **No authentication.** Nothing identifies a caller (ADR-0009, T-03). Do not expose it.
+- **Throughput is not measured.** The lock, pool, backoff and lease defaults are judgements, each with its reasoning in ARCHITECTURE.md, and none has been checked under sustained load.
+- **A database outage longer than about 30 s dead-letters the messages in flight** with the default retry settings. Nothing is lost and replaying them is safe, but replaying is manual: there is no tool for it.
+- **A waiting reversal is settled at its next look,** up to the current backoff (5 s, doubling to 5 min) after its bet arrives, and a bet that arrives after its reversal expired is applied normally (no tombstone).
+- **Events can arrive twice and out of order** within a wallet after a retry. That is the contract (IR-03), and a consumer that ignores it will be wrong.
+- **Superuser tampering is undetectable** here: someone who disables the triggers and edits balance and ledger consistently leaves nothing to reconcile (T-09). In Compose the application connects as a superuser, so the triggers stop mistakes, not a hostile operator.
+- **Reconciliation scans the wallet's whole ledger** on every call. A wallet with millions of entries would want an incremental check.
+- **Shutdown in the middle of a settlement** is tested for the consumer with a message in flight, not for the publisher or the reference worker mid-round.
+- **Single region, single broker, no tracing, no dashboards, no alert rules.**
+
+---
 
 ## A rule worth knowing first
 
@@ -66,6 +69,26 @@ docker compose --profile app up -d --build
 curl localhost:3001/health/ready   # also 3002, 3003
 ```
 
+## Configuration
+
+All through environment variables; `.env.example` has the defaults and a bad value stops the process at start. `APP_ROLES` chooses what one process does (ADR-0001): `api`, `consumer`, `publisher`, `reference-worker`, comma separated, all four by default.
+
+| Variable | Default | What it bounds |
+| --- | --- | --- |
+| `PORT`, `DATABASE_URL`, `AWS_REGION`, `SQS_ENDPOINT` | see `.env.example` | where it listens and what it talks to |
+| `SHUTDOWN_TIMEOUT_MS` | 25000 | how long a stopping process may take before it exits 1 |
+| `LOCK_TIMEOUT_MS`, `STATEMENT_TIMEOUT_MS` | 2000, 5000 | the wait for a wallet lock; the longest any statement may run |
+| `DATABASE_POOL_MAX`, `DATABASE_ACQUIRE_TIMEOUT_MS` | 10, 1000 | connections per process; the wait to get or open one |
+| `QUEUE_WAIT_SECONDS` | 5 | one poll of the input queue, and so the longest stopping the consumer can take |
+| `QUEUE_BACKOFF_BASE_SECONDS`, `QUEUE_BACKOFF_CAP_SECONDS` | 2, 30 | the wait before a failed message is delivered again |
+| `OUTBOX_POLL_INTERVAL_MS`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE_MS` | 500, 25, 30000 | how the publisher polls, claims and how long a claim is held |
+| `OUTBOX_RETRY_BASE_SECONDS`, `OUTBOX_RETRY_CAP_SECONDS` | 1, 60 | the wait before a failed publication is tried again (no attempt limit) |
+| `REFERENCE_TTL_SECONDS` | 3600 | how long a reversal waits for its reference |
+| `REFERENCE_RETRY_BASE_SECONDS`, `REFERENCE_RETRY_CAP_SECONDS` | 5, 300 | the wait between looks at a waiting reversal |
+| `REFERENCE_BATCH_SIZE`, `REFERENCE_LEASE_MS`, `REFERENCE_POLL_INTERVAL_MS` | 25, 30000, 1000 | how the reference worker polls and claims |
+
+The reasoning behind each default, and what it does not guarantee, is in ARCHITECTURE.md.
+
 ## Commands
 
 | Command | What it does |
@@ -75,7 +98,7 @@ curl localhost:3001/health/ready   # also 3002, 3003
 | `bun run test:unit` | Unit tests, no services needed |
 | `bun run test:integration` | Needs `docker compose up postgres sqs` |
 | `bun run test:concurrency` | Real parallel connections, and the multi-process failure suite: the eight scenarios of §13 against three or more real application processes, killed and restarted. Needs the same services; takes a few minutes |
-| `bun run check:docs` | ADR index, cited ids, relative links |
+| `bun run check:docs` | ADR index, cited requirement and threat ids, every requirement cited by a test or source file, relative links |
 | `./.github/scripts/check-instances.sh` | Needs `docker compose --profile app up -d --build --wait`: three processes behave as one system |
 
 ## API
@@ -110,7 +133,7 @@ curl -s -X POST localhost:3000/wagering/transactions -H 'content-type: applicati
   -H 'idempotency-key: provider-a:transaction-123' \
   -d '{"providerId":"provider-a","externalTransactionId":"transaction-123","playerId":"…","walletId":"…",
        "roundId":"round-987","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}'
-# {"transactionId":"…","status":"PROCESSED","balance":{"amount":"975.00","currency":"BRL"},"idempotentReplay":false}
+# {"transactionId":"…","status":"PROCESSED","idempotentReplay":false,"balance":{"amount":"975.00","currency":"BRL"}}
 ```
 
 - **Sending it again with the same key returns the same answer** with `"idempotentReplay": true` and changes nothing. The same key with a different payload is a `409`.

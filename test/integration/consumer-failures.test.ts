@@ -20,6 +20,7 @@ import {
 } from "../support/consumer-harness";
 import { SettlementWorld } from "../support/settlement";
 
+// Requirements: FR-82, FR-83, NFR-11.
 // What the consumer does with a message it could not settle (section 3.11, NFR-11), against the real broker, and
 // for the transient case against a PostgreSQL that is really stopped.
 

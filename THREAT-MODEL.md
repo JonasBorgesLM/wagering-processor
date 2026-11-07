@@ -5,7 +5,7 @@
 
 > Most threats here are not attackers. The realistic way this system loses money is a retry, a race, or a crash at the wrong moment. §7 lists what is not covered.
 
-**Status:** no business code exists yet, so every mitigation below is designed, not verified. Each becomes verified when its test has been seen failing.
+**Status:** every mitigation below is implemented and has a test; section 6 names them and says which protections were also removed to watch the test fail. Threats with no mitigation in code (T-06, T-07) are said to be open, in the same place. A mitigation is verified when its test has been seen failing, and where that was not done it says so.
 
 ---
 
@@ -123,9 +123,9 @@ queue ───SQS────▶ [ consumer ]┘                          │
 | T-06 | SR-03 |
 | T-07 | FR-58, SR-03 |
 | T-08 | SR-01 |
-| T-09 | FR-70, NFR-02, SR-06 |
-| T-10 | FR-80, IR-02 |
-| T-11 | FR-60, SR-04 |
+| T-09 | FR-70, FR-97 to FR-99, NFR-02, SR-06 |
+| T-10 | FR-80, FR-82, FR-83, IR-02 |
+| T-11 | FR-60, FR-64, FR-74, SR-04 |
 | T-12 | FR-53, FR-54 |
 | T-13 | NFR-10 |
 
@@ -133,7 +133,22 @@ SR-02 is hardening: it keeps T-05 true on the queue path.
 
 ## 6. Verification
 
-Each threat maps to tests in the challenge's mandatory suite (§13). Each protection is removed once to watch its test go red, as noted in the test.
+What each mitigation is tested by, and whether the protection was removed to see the test go red. "Removed" means a mutation was run and the named test failed; the mutants are listed in the pull request that added the test and, for the failure suite, in ARCHITECTURE.md.
+
+| Threat | Tests | Protection removed and seen red |
+| --- | --- | --- |
+| T-01 duplicate delivery | `test/concurrency/settlement.test.ts` (50 at once), `multiprocess.test.ts` scenarios 1, 2 and 8, `integration/inbox.test.ts`, `settlement.test.ts` | the idempotency lookup, the inbox record, the hash comparison |
+| T-02 concurrent corruption | `multiprocess.test.ts` scenarios 2 and 3, `concurrency/settlement.test.ts`, the schema tests for non-negative balances | the wallet lock; `check-instances.sh` with the lock removed (the database constraints still refused the overdraw) |
+| T-03 crash after commit | `multiprocess.test.ts` scenarios 5 and 6, `consumer.test.ts`, `outbox-publisher.test.ts`, `inbox.test.ts` (a crash after each write) | acknowledging before the use case; marking an outbox row before publishing; the outbox lease; `SKIP LOCKED` |
+| T-04 double reversal | `schema.test.ts` (names the constraint that refused the row), `domain/settlement-policy.test.ts`, `reference-worker.test.ts` | not removed; the schema test asserts which constraint refuses |
+| T-05 another player's wallet | `domain/settlement-policy.test.ts`, `http-transactions.test.ts` (`PLAYER_WALLET_MISMATCH`, no balance in the answer) | each pair of adjacent checks swapped |
+| T-06, T-07 | none: not mitigated | not applicable |
+| T-08 sensitive values in logs | `integration/logging.test.ts`, `unit/json-logger.test.ts` | a payload value put in the log message text (the allowlist cannot see it, so only the test catches it) |
+| T-09 ledger tampering | `schema.test.ts` (append-only triggers), `reconciliation.test.ts` (with the trigger and the arithmetic constraint removed on purpose) | the chain check, the arithmetic check, the sign of the difference, the lock |
+| T-10 poison message | `consumer-failures.test.ts` (each permanent failure, attempts exhausted, PostgreSQL really stopped) | permanent retried instead of dead-lettered; attempts never exhausted; DLQ failure ignored |
+| T-11 exhaustion | `http-transactions.test.ts` (a burst larger than the pool), `settlement.test.ts` (the pool and the terminated connection), body-limit tests | the connection errors were found by the failure suite on a slow runner and fixed |
+| T-12 key squatting | `settlement.test.ts`, `http-transactions.test.ts` (the conflicts) | the idempotency lookup |
+| T-13 dependency | `bun audit` and the frozen lockfile in CI | not applicable |
 
 ## 7. Explicitly not addressed
 

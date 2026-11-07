@@ -25,6 +25,8 @@ import {
   toProblem,
 } from "../../../src/wagering/infrastructure/http/problem";
 
+// Requirements: FR-63.
+
 // "Colapsar essas situações em um mesmo código obriga o provedor a interpretar mensagem de erro" (§9).
 // One table, so the whole mapping is visible at once and two situations cannot quietly share a status.
 

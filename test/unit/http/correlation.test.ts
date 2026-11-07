@@ -4,6 +4,8 @@ import {
   correlationMiddleware,
 } from "../../../src/wagering/infrastructure/http/correlation";
 
+// Requirements: FR-65.
+
 function run(header: string | string[] | undefined) {
   const request: CorrelatedRequest = { headers: { "x-correlation-id": header } };
   const set: Record<string, string> = {};

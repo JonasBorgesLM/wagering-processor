@@ -20,6 +20,8 @@ import {
 } from "../../src/wagering/infrastructure/persistence/mikro-orm-unit-of-work";
 import { brl, command, deferred, instrumented, SettlementWorld } from "../support/settlement";
 
+// Requirements: FR-74 (the wait for a connection), NFR-11.
+
 let world: SettlementWorld;
 beforeAll(async () => {
   world = await SettlementWorld.create();

@@ -9,6 +9,7 @@ bun run typecheck
 bun run lint
 bun run test:unit
 bun run test:integration   # needs: docker compose up -d --wait postgres sqs
+bun run test:concurrency   # the same services; includes the multi-process failure suite, a few minutes
 bun run check:docs
 ```
 

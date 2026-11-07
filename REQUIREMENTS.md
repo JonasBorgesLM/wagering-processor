@@ -1,11 +1,12 @@
 # wagering-processor — Requirements
 
-**Version:** 0.1 (draft for review)
-**Status:** baseline for implementation — no code written yet
+**Version:** 1.0
+**Status:** implemented. Every requirement id is cited by a test, a source file or a script, which `check-docs.sh` enforces
 **Source:** [`junglegaming/backend-challenge`](https://github.com/junglegaming/backend-challenge) at `c7143e6`. `§n` cites a section of that README.
 
 A requirement without a test that fails when the protection is removed counts
-as unimplemented. Interpretations (`INT-nn`) are decisions the README leaves
+as unimplemented. A citation shows where the test is; that it fails without the
+protection is what the negative controls recorded in each pull request show. Interpretations (`INT-nn`) are decisions the README leaves
 open; §7 of the README requires them to be documented.
 
 ---

@@ -20,6 +20,7 @@ import {
 } from "../support/consumer-harness";
 import { SettlementWorld } from "../support/settlement";
 
+// Requirements: FR-76, FR-78, FR-79.
 // Real PostgreSQL and a real broker. The consumer is built directly where a test needs to see or break the
 // acknowledgement, and through the application where it needs the wiring.
 

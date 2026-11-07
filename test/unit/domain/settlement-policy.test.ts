@@ -17,6 +17,8 @@ import {
 import { LedgerDirection } from "../../../src/wagering/domain/wallet-ledger-entry";
 import { brl, stored, transaction, usd, walletWith } from "../../support/domain-fixtures";
 
+// Requirements: FR-20 (the kinds a reversal may point at), FR-24 (a WIN on a reversed BET), SR-05 (PLAYER_WALLET_MISMATCH).
+
 type Overrides = Partial<SettlementInput>;
 
 /** Wallet of 100.00, a REFUND of 80.00, and a PROCESSED BET of 80.00 to point at, unless told otherwise. */
