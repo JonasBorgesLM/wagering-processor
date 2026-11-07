@@ -11,7 +11,7 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)
 ![SQS](https://img.shields.io/badge/SQS-MiniStack-FF9900?logo=amazonsqs&logoColor=white)
 
-Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge) · v1.1.0
+Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge) · v1.1.1
 
 </div>
 
@@ -19,7 +19,7 @@ Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/
 
 Game providers send `BET`, `WIN`, `LOSS`, `REFUND` and `ROLLBACK` operations over HTTP or through an SQS queue. Each one is applied to a player's wallet **exactly once**, however many times it is sent, in whatever order, through whichever instance. Every balance change has its ledger entry, and the stored balance always equals what the ledger rebuilds.
 
-> **Status: v1.1.0.** Everything the challenge asks for is implemented and tested against real PostgreSQL and a real SQS emulator, including a failure suite that kills real processes. What is **not** here is listed under [Known limitations](#known-limitations). Read it before relying on this.
+> **Status: v1.1.1.** Everything the challenge asks for is implemented and tested against real PostgreSQL and a real SQS emulator, including a failure suite that kills real processes. What is **not** here is listed under [Known limitations](#known-limitations). Read it before relying on this.
 
 ## Contents
 
@@ -256,7 +256,7 @@ Every required test runs against **real PostgreSQL and a real SQS emulator**, wi
 | stress | `./scripts/stress.sh`: spike, ramp-up, ten-minute soak and a database outage, driven by the owner's sapper against a throwaway stack, each judged by SLOs written beforehand (no `500`, bounded `503`) and then by reconciling the wallet. All passed; one wallet only, outbox not observed. [`docs/STRESS-TEST.md`](docs/STRESS-TEST.md) |
 | `test:load` | An experiment, not a gate: throughput, p50/p95/p99, error rate, lock conflicts and outbox lag, written up in [`docs/LOAD-TEST.md`](docs/LOAD-TEST.md) |
 
-**Tests that guard a protection were seen failing, and for the main ones anyone can see it again.** `bun run test:mutation` removes 22 protections one at a time (the wallet lock, the idempotency lookup, the inbox, acknowledging before the commit, the outbox lease and `SKIP LOCKED`, marking an event before publishing it, the delivery limit, the reconciliation bound and others, listed in `test/mutation/mutants.ts`), runs the tests that guard each, restores the file, and fails if one survives or no longer applies. It runs weekly in CI (`mutation.yml`, not yet run there) and takes tens of minutes. Its first run found that `SKIP LOCKED` on the outbox and on the pending-reference claim, recorded as removed and seen red by hand, were not: no test noticed either gone. Tests for what they actually buy (not waiting on a row another process holds) were added. The rest of the protections, listed per threat in [`THREAT-MODEL.md`](THREAT-MODEL.md), were removed by hand and are not repeatable. Every requirement id is cited by a test or the code that implements it, and CI fails if one is not.
+**Tests that guard a protection were seen failing, and for the main ones anyone can see it again.** `bun run test:mutation` removes 23 protections one at a time (the wallet lock, the idempotency lookup, the inbox, acknowledging before the commit, the outbox lease and `SKIP LOCKED`, marking an event before publishing it, the delivery limit, the reconciliation bound and others, listed in `test/mutation/mutants.ts`), runs the tests that guard each, restores the file, and fails if one survives or no longer applies. It runs weekly in CI (`mutation.yml`, not yet run there) and takes tens of minutes. Its first run found that `SKIP LOCKED` on the outbox and on the pending-reference claim, recorded as removed and seen red by hand, were not: no test noticed either gone. Tests for what they actually buy (not waiting on a row another process holds) were added. The rest of the protections, listed per threat in [`THREAT-MODEL.md`](THREAT-MODEL.md), were removed by hand and are not repeatable. Every requirement id is cited by a test or the code that implements it, and CI fails if one is not.
 
 ## Known limitations
 

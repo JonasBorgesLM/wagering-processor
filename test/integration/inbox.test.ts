@@ -72,6 +72,7 @@ describe("a redelivery changes nothing", () => {
 
     expect(second).toMatchObject({ transactionId: first.transactionId, idempotentReplay: true });
     expect(await world.walletState(wallet.walletId)).toEqual({ balance: "20.00", version: 2 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
     expect(await world.counts(wallet.walletId)).toEqual({ transactions: 1, entries: 1, events: 2 });
     expect(await inboxRows("msg-again")).toHaveLength(1);
   });
@@ -106,6 +107,7 @@ describe("a redelivery changes nothing", () => {
     expect(results.filter((result) => !result.idempotentReplay)).toHaveLength(1);
     expect(new Set(results.map((result) => result.transactionId)).size).toBe(1);
     expect(await world.walletState(wallet.walletId)).toEqual({ balance: "20.00", version: 2 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
     expect(await inboxRows("msg-storm")).toHaveLength(1);
   });
 
@@ -130,6 +132,7 @@ describe("one message id with different content (INT-17)", () => {
     expect(await inboxRows("msg-lie")).toEqual(before);
     expect(await world.counts(wallet.walletId)).toEqual({ transactions: 1, entries: 1, events: 2 });
     expect(await world.walletState(wallet.walletId)).toEqual({ balance: "90.00", version: 2 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
   });
 });
 
@@ -185,5 +188,6 @@ describe("the inbox rolls back with the financial change (NFR-04)", () => {
     expect(await inboxRows("msg-refund")).toHaveLength(0);
     expect((await world.useCase.execute(refund, source("msg-refund"))).status).toBe(Status.Processed);
     expect(await world.walletState(wallet.walletId)).toEqual({ balance: "100.00", version: 3 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
   });
 });

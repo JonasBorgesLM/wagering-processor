@@ -275,6 +275,7 @@ describe("a reference that never arrives (FR-41, FR-42)", () => {
       "WagerTransactionRejected",
     ]);
     expect(await world.walletState(wallet.walletId)).toEqual({ balance: "100.00", version: 1 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
     expect(await workerOver().runOnce()).toMatchObject({ claimed: 0 });
   });
 
@@ -308,6 +309,7 @@ describe("a reference that never arrives (FR-41, FR-42)", () => {
     await workerOver().runOnce();
     expect((await world.useCase.execute(bet)).status).toBe(Status.Processed);
     expect(await world.walletState(wallet.walletId)).toEqual({ balance: "20.00", version: 2 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
   });
 });
 
@@ -346,6 +348,7 @@ describe("several workers", () => {
     for (const [index, wallet] of wallets.entries()) {
       expect((await rowOf(waiting[index] as string)).status).toBe("PROCESSED");
       expect(await world.walletState(wallet.walletId)).toEqual({ balance: "100.00", version: 3 });
+      await world.expectLedgerExplainsBalance(wallet.walletId);
       expect(
         (await eventTypes(wallet.walletId)).filter((type) => type === "WagerTransactionProcessed"),
       ).toHaveLength(2);
@@ -373,6 +376,7 @@ describe("several workers", () => {
       skipped: 1,
     });
     expect(await world.walletState(wallet.walletId)).toEqual({ balance: "100.00", version: 3 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
     expect(await eventTypes(wallet.walletId)).toHaveLength(5);
   });
 });
@@ -486,5 +490,6 @@ describe("as a process (FR-81)", () => {
     expect(await child.exited).toBe(143);
     expect(await new Response(child.stdout as ReadableStream).text()).toContain("Draining");
     expect(await world.walletState(wallet.walletId)).toEqual({ balance: "100.00", version: 3 });
+    await world.expectLedgerExplainsBalance(wallet.walletId);
   }, 40_000);
 });

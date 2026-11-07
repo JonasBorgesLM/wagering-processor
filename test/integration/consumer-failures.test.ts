@@ -160,6 +160,7 @@ describe("a transient failure is retried with a backoff (NFR-11)", () => {
       await eventually(queueIsEmpty, "the retry to be acknowledged");
       expect(calls()).toBe(2);
       expect(await world.walletState(wallet.walletId)).toEqual({ balance: "20.00", version: 2 });
+      await world.expectLedgerExplainsBalance(wallet.walletId);
       expect((await depth(deadLetterUrl)).visible).toBe(0);
     } finally {
       await consumer.beforeApplicationShutdown();
@@ -198,6 +199,7 @@ describe("a transient failure is retried with a backoff (NFR-11)", () => {
       await eventually(queueIsEmpty, "the message to be settled", 15_000);
       expect(calls()).toBe(3);
       expect(await world.walletState(wallet.walletId)).toEqual({ balance: "20.00", version: 2 });
+      await world.expectLedgerExplainsBalance(wallet.walletId);
     } finally {
       await consumer.beforeApplicationShutdown();
     }
@@ -291,6 +293,7 @@ describe("with PostgreSQL really stopped", () => {
       await eventually(queueIsEmpty, "the acknowledgement");
       expect(real.results[0]).toMatchObject({ status: "PROCESSED", idempotentReplay: false });
       expect(await world.walletState(wallet.walletId)).toEqual({ balance: "20.00", version: 2 });
+      await world.expectLedgerExplainsBalance(wallet.walletId);
       expect(await world.counts(wallet.walletId)).toEqual({ transactions: 1, entries: 1, events: 2 });
       expect((await depth(deadLetterUrl)).visible).toBe(0);
     } finally {
@@ -328,6 +331,7 @@ describe("with PostgreSQL really stopped", () => {
       await eventually(queueIsEmpty, "the acknowledgement");
       expect(real.results[0]).toMatchObject({ status: "PROCESSED", idempotentReplay: false });
       expect(await world.walletState(wallet.walletId)).toEqual({ balance: "20.00", version: 2 });
+      await world.expectLedgerExplainsBalance(wallet.walletId);
       expect(await world.counts(wallet.walletId)).toEqual({ transactions: 1, entries: 1, events: 2 });
       expect((await depth(deadLetterUrl)).visible).toBe(0);
     } finally {
