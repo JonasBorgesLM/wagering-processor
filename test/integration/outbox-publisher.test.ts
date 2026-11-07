@@ -22,6 +22,7 @@ import { SqsEventPublisher } from "../../src/wagering/infrastructure/messaging/s
 import { MikroOrmOutboxStore } from "../../src/wagering/infrastructure/persistence/mikro-orm-outbox-store";
 import { eventually, setUpQueues, sqs } from "../support/consumer-harness";
 import { TEST_ENV } from "../support/env";
+import { freePort } from "../support/ports";
 import { command, SettlementWorld } from "../support/settlement";
 
 // Reading the queue to its end takes two one-second polls, so a test that reads twice outlasts the default.
@@ -302,7 +303,7 @@ describe("as a process (FR-81)", () => {
         ...process.env,
         ...TEST_ENV,
         DATABASE_URL: world.databaseUrl(),
-        PORT: String(20000 + Math.floor(Math.random() * 20000)),
+        PORT: String(freePort()),
         APP_ROLES: "publisher",
         OUTBOX_POLL_INTERVAL_MS: "100",
       },
@@ -334,7 +335,7 @@ describe("as a process (FR-81)", () => {
         ...process.env,
         ...TEST_ENV,
         DATABASE_URL: world.databaseUrl(),
-        PORT: String(20000 + Math.floor(Math.random() * 20000)),
+        PORT: String(freePort()),
         APP_ROLES: "api,consumer",
         QUEUE_WAIT_SECONDS: "1",
       },

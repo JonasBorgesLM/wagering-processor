@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { TEST_ENV } from "../support/env";
+import { freePort } from "../support/ports";
 import { provisionQueues } from "../support/queues";
 
 // Runs the real entry point as a separate process, because signal handling and
@@ -8,7 +9,7 @@ import { provisionQueues } from "../support/queues";
 const running: Bun.Subprocess[] = [];
 
 function start(overrides: Record<string, string> = {}) {
-  const port = 20000 + Math.floor(Math.random() * 20000);
+  const port = freePort();
   const child = Bun.spawn(["bun", "run", "src/main.ts"], {
     // Only the api role by default. A process killed while its consumer long-polls leaves that poll open at the
     // broker, which hands the next message to nobody and hides it: it would take the messages of the tests after it.

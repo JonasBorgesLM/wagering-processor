@@ -1,5 +1,6 @@
 import { eventually } from "./consumer-harness";
 import { TEST_ENV } from "./env";
+import { freePort } from "./ports";
 import type { SettlementWorld } from "./settlement";
 
 export interface ClusterProcess {
@@ -24,7 +25,7 @@ export class Cluster {
 
   /** Short polls and intervals, long locks and a wide pool: so a held lock is waited on and not given up. */
   async start(roles: string, env: Record<string, string> = {}): Promise<ClusterProcess> {
-    const port = 20000 + Math.floor(Math.random() * 20000);
+    const port = freePort();
     const child = Bun.spawn(["bun", "run", "src/main.ts"], {
       env: {
         ...process.env,

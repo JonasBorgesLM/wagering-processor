@@ -9,6 +9,7 @@ import {
 import { MikroOrmPendingReferenceStore } from "../../src/wagering/infrastructure/persistence/mikro-orm-pending-reference-store";
 import { eventually } from "../support/consumer-harness";
 import { TEST_ENV } from "../support/env";
+import { freePort } from "../support/ports";
 import { brl, command, instrumented, SettlementWorld } from "../support/settlement";
 
 // Requirements: FR-40 to FR-48.
@@ -410,7 +411,7 @@ describe("as a process (FR-81)", () => {
         ...process.env,
         ...TEST_ENV,
         DATABASE_URL: world.databaseUrl(),
-        PORT: String(20000 + Math.floor(Math.random() * 20000)),
+        PORT: String(freePort()),
         APP_ROLES: "reference-worker",
         REFERENCE_POLL_INTERVAL_MS: "100",
       },

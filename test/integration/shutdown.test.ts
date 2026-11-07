@@ -14,6 +14,7 @@ import {
   started,
 } from "../support/consumer-harness";
 import { TEST_ENV } from "../support/env";
+import { freePort } from "../support/ports";
 import { SettlementWorld } from "../support/settlement";
 
 // SIGTERM with messages in flight (FR-80), on the real entry point as a separate process, against the real broker
@@ -45,7 +46,7 @@ afterEach(async () => {
 }, 30_000);
 
 function startProcess(shutdownTimeoutMs: number) {
-  const port = 20000 + Math.floor(Math.random() * 20000);
+  const port = freePort();
   const child = Bun.spawn(["bun", "run", "src/main.ts"], {
     env: {
       ...process.env,
