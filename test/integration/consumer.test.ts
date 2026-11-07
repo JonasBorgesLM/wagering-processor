@@ -69,6 +69,7 @@ describe("a message from the queue", () => {
       await eventually(queueIsEmpty, "the rejection to be acknowledged");
       expect(results[0]).toMatchObject({ status: "REJECTED", failureCode: "INSUFFICIENT_FUNDS" });
       expect(await world.walletState(wallet.walletId)).toEqual({ balance: "10.00", version: 1 });
+      await world.expectLedgerExplainsBalance(wallet.walletId);
     } finally {
       await consumer.beforeApplicationShutdown();
     }
@@ -198,6 +199,7 @@ describe("the application", () => {
     try {
       await eventually(queueIsEmpty, "the consumer role to settle it");
       expect(await world.walletState(wallet.walletId)).toEqual({ balance: "20.00", version: 2 });
+      await world.expectLedgerExplainsBalance(wallet.walletId);
       expect(consumer.logs.some((line) => line.message === "Message settled")).toBe(true);
     } finally {
       await consumer.stop();

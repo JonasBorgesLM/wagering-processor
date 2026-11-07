@@ -40,6 +40,7 @@ describe("the mandatory scenario (§8)", () => {
     expect(again.map((r) => r.status)).toEqual(first.map((r) => r.status));
     expect(again.every((r) => r.idempotentReplay)).toBe(true);
     expect((await world.walletState(wallet.walletId)).balance).toBe("20.00");
+    await world.expectLedgerExplainsBalance(wallet.walletId);
     expect((await world.counts(wallet.walletId)).entries).toBe(1);
   });
 });

@@ -666,6 +666,7 @@ describe("a transaction that ended in a failure", () => {
     const read = await (await call(`${app.url}/wagering/transactions/${id}`)).json();
     expect(read).toMatchObject({ status: "FAILED", failureCode: "SETTLEMENT_FAILED" });
     expect((await world.walletState(wallet.walletId)).balance).toBe("100.00");
+    await world.expectLedgerExplainsBalance(wallet.walletId);
   });
 });
 
