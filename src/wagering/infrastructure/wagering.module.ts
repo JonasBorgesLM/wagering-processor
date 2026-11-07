@@ -9,6 +9,7 @@ import { DrainState } from "../../platform/lifecycle/drain-state";
 import { PollingWorker } from "../../platform/lifecycle/polling-worker";
 import { MetricsModule } from "../../platform/metrics/metrics.module";
 import { backoffSeconds } from "../../platform/resilience/backoff";
+import { ApplyRetention } from "../application/apply-retention";
 import { OpenWallet } from "../application/open-wallet";
 import type {
   Clock,
@@ -18,6 +19,7 @@ import type {
   OutboxStore,
   PendingReferenceStore,
   ReconciliationReader,
+  RetentionStore,
   TransactionReader,
   TransientReason,
   UnitOfWork,
@@ -40,6 +42,7 @@ import { measureOutbox } from "./persistence/mikro-orm-outbox-lag";
 import { MikroOrmOutboxStore } from "./persistence/mikro-orm-outbox-store";
 import { MikroOrmPendingReferenceStore } from "./persistence/mikro-orm-pending-reference-store";
 import { MikroOrmReconciliationReader } from "./persistence/mikro-orm-reconciliation-reader";
+import { MikroOrmRetentionStore } from "./persistence/mikro-orm-retention-store";
 import { MikroOrmTransactionReader } from "./persistence/mikro-orm-transaction-reader";
 import { MikroOrmUnitOfWork } from "./persistence/mikro-orm-unit-of-work";
 import { MikroOrmWalletReader } from "./persistence/mikro-orm-wallet-reader";
@@ -52,6 +55,9 @@ export const UNIT_OF_WORK = Symbol("UNIT_OF_WORK");
 export const WALLET_READER = Symbol("WALLET_READER");
 export const TRANSACTION_READER = Symbol("TRANSACTION_READER");
 export const OUTBOX_STORE = Symbol("OUTBOX_STORE");
+const RETENTION_BATCH_SIZE = 1_000;
+export const RETENTION_STORE = Symbol("RETENTION_STORE");
+export const RETENTION_WORKER = Symbol("RETENTION_WORKER");
 export const EVENT_PUBLISHER = Symbol("EVENT_PUBLISHER");
 export const OUTBOX_WORKER = Symbol("OUTBOX_WORKER");
 export const PENDING_REFERENCE_STORE = Symbol("PENDING_REFERENCE_STORE");
@@ -226,6 +232,51 @@ export class WageringModule {
                       return result.claimed > 0 && result.published === result.claimed;
                     },
                     config.outboxPollIntervalMs,
+                    drain,
+                  );
+                },
+              },
+              // In the publisher role because that is the role that already owns the outbox, and because every
+              // process running it is harmless: a delete by age that two processes share only deletes less (T-15).
+              {
+                provide: RETENTION_STORE,
+                inject: [MikroORM, APP_CONFIG, METRICS],
+                useFactory: (orm: MikroORM, config: AppConfig, metrics: WageringMetrics) =>
+                  new MikroOrmRetentionStore(orm, limits(config, metrics)),
+              },
+              {
+                provide: RETENTION_WORKER,
+                inject: [RETENTION_STORE, CLOCK, APP_CONFIG, METRICS, DrainState],
+                useFactory: (
+                  store: RetentionStore,
+                  clock: Clock,
+                  config: AppConfig,
+                  metrics: WageringMetrics,
+                  drain: DrainState,
+                ) => {
+                  const logger = new Logger("Retention");
+                  const useCase = new ApplyRetention(
+                    store,
+                    clock,
+                    {
+                      inboxDays: config.inboxRetentionDays,
+                      outboxDays: config.outboxRetentionDays,
+                      batchSize: RETENTION_BATCH_SIZE,
+                    },
+                    metrics,
+                  );
+                  return new PollingWorker(
+                    "Retention",
+                    async () => {
+                      const result = await useCase.runOnce();
+                      if (result.inbox + result.outbox > 0) {
+                        logger.log(
+                          `Removed ${result.inbox} inbox and ${result.outbox} published outbox row(s)`,
+                        );
+                      }
+                      return result.more;
+                    },
+                    config.retentionIntervalMs,
                     drain,
                   );
                 },

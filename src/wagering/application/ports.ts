@@ -108,6 +108,16 @@ export interface OutboxStore {
   reschedule(items: ReadonlyArray<{ id: string; nextAttemptAt: Date }>): Promise<void>;
 }
 
+/** Removes what has outlived its use from the two tables that grow with traffic (T-15). Each returns how many it removed. */
+export interface RetentionStore {
+  /** Inbox rows received before `cutoff`, at most `limit` of them. */
+  deleteInboxReceivedBefore(cutoff: Date, limit: number): Promise<number>;
+  /** Outbox rows that were published before `cutoff`, at most `limit`. A row not yet published is never removed. */
+  deletePublishedOutboxBefore(cutoff: Date, limit: number): Promise<number>;
+}
+
+export type RetentionTable = "inbox" | "outbox";
+
 export interface PublishBatchResult {
   /** Ids of the entries the broker accepted. */
   accepted: string[];
@@ -224,6 +234,8 @@ export interface WageringMetrics {
     outcome: "decided" | "replay" | "error";
     seconds: number;
   }): void;
+  /** The retention job removed rows from a table. */
+  retentionDeleted(table: RetentionTable, count: number): void;
 }
 
 export const NO_METRICS: WageringMetrics = {
@@ -233,4 +245,5 @@ export const NO_METRICS: WageringMetrics = {
   deadLettered: () => undefined,
   databaseTransient: () => undefined,
   settlementTimed: () => undefined,
+  retentionDeleted: () => undefined,
 };
