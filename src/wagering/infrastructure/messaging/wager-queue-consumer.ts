@@ -10,6 +10,7 @@ import {
 import { type BeforeApplicationShutdown, Logger, type OnApplicationBootstrap } from "@nestjs/common";
 import { QUEUES } from "../../../platform/config/config";
 import { type BackoffPolicy, backoffSeconds } from "../../../platform/resilience/backoff";
+import { ApplicationError } from "../../application/errors";
 import { NO_METRICS, type WageringMetrics } from "../../application/ports";
 import type { SubmitWagerTransaction } from "../../application/submit-wager-transaction";
 import { classifyFailure } from "./classify-failure";
@@ -201,7 +202,7 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
     if (permanent || exhausted) {
       this.logger.error(permanent ? "Message cannot be processed" : "Message ran out of attempts", {
         messageId: message.MessageId,
-        error: describe(error),
+        error: describeForLog(error),
       });
       return this.deadLetter(
         queues,
@@ -216,7 +217,7 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
     this.metrics.retried("consumer");
     this.logger.warn(`Message will be retried in ${delay}s`, {
       messageId: message.MessageId,
-      error: describe(error),
+      error: describeForLog(error),
     });
     try {
       await this.sqs.send(
@@ -295,6 +296,18 @@ export class WagerQueueConsumer implements OnApplicationBootstrap, BeforeApplica
       );
     });
   }
+}
+
+/**
+ * What a log line may say about why a message failed (SR-01). An application error says its code and not its
+ * message, because the message names what the sender sent: `IDEMPOTENCY_CONFLICT` and not "key provider-a:tx-1 was
+ * used with a different payload", `VALIDATION_ERROR` and not a field name the sender chose. The full reason still
+ * goes to the DLQ, next to the body, which carries the whole payload anyway. Other errors are the system's own
+ * (a lost connection, a bug) and are described in full, since that is what diagnosing them needs.
+ */
+export function describeForLog(error: unknown): string {
+  if (error instanceof ApplicationError) return `${error.name} (${error.code})`;
+  return describe(error);
 }
 
 function describe(error: unknown): string {

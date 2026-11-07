@@ -181,6 +181,52 @@ describe("over the queue", () => {
   });
 });
 
+describe("over the queue, when a message fails", () => {
+  test("a conflict and an unknown field are logged by their code, never by what the sender sent", async () => {
+    const wallet = await world.openWallet("100.00");
+    const app = await startApp(world.databaseUrl(), { roles: "consumer", env: { QUEUE_WAIT_SECONDS: "1" } });
+    try {
+      const key = `${SECRET.key}-conflict`;
+      const external = `${SECRET.external}-conflict`;
+      const first = message(wallet, { idempotencyKey: key, externalTransactionId: external });
+      await send(first, wallet.walletId);
+      await eventually(queueIsEmpty, "the first message to be settled");
+
+      // The same key with another amount: a conflict, dead-lettered.
+      await send(
+        message(wallet, {
+          idempotencyKey: key,
+          externalTransactionId: external,
+          money: { amount: "1.00", currency: "BRL" },
+        }),
+        wallet.walletId,
+      );
+      // A field the sender made up, whose name must not reach a log either.
+      const invalid = message(wallet) as unknown as { data: Record<string, unknown> };
+      invalid.data["field-secret-444"] = true;
+      await send(invalid, wallet.walletId);
+      await eventually(queueIsEmpty, "both failures to be dead-lettered");
+      await eventually(
+        () => app.logs.filter((l) => l.message === "Message cannot be processed").length >= 2,
+        "both failures to be logged",
+      );
+
+      const failures = app.logs.filter((l) => l.message === "Message cannot be processed");
+      expect(failures.map((l) => l.error).sort()).toEqual([
+        "IdempotencyConflictError (IDEMPOTENCY_CONFLICT)",
+        "InvalidRequestError (VALIDATION_ERROR)",
+      ]);
+      for (const line of app.logs) {
+        const text = JSON.stringify(line);
+        expect(text).not.toContain(key);
+        expect(text).not.toContain("field-secret-444");
+      }
+    } finally {
+      await app.stop();
+    }
+  });
+});
+
 describe("in the reference worker", () => {
   test("a waiting transaction that is decided is logged with its ids and status", async () => {
     const wallet = await world.openWallet("100.00");
