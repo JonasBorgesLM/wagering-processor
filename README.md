@@ -137,6 +137,7 @@ All through environment variables; `.env.example` has the defaults and a bad val
 | `SHUTDOWN_TIMEOUT_MS` | 25000 | how long a stopping process may take before it exits 1 |
 | `LOCK_TIMEOUT_MS`, `STATEMENT_TIMEOUT_MS` | 2000, 5000 | the wait for a wallet lock; the longest any statement may run |
 | `DATABASE_POOL_MAX`, `DATABASE_ACQUIRE_TIMEOUT_MS` | 10, 1000 | connections per process; the wait to get or open one |
+| `INBOX_RETENTION_DAYS`, `OUTBOX_RETENTION_DAYS`, `RETENTION_INTERVAL_MS` | 21, 30, 3600000 | age past which inbox rows and published outbox rows are deleted; how often the job looks (FR-103, FR-104) |
 | `RECONCILIATION_MAX_CONCURRENT` | 2 | reconciliations running at once in a process; one over is a `503` (FR-102) |
 | `QUEUE_WAIT_SECONDS` | 5 | one poll of the input queue, and so the longest stopping the consumer can take |
 | `QUEUE_BACKOFF_BASE_SECONDS`, `QUEUE_BACKOFF_CAP_SECONDS` | 2, 30 | the wait before a failed message is delivered again |
@@ -238,6 +239,7 @@ Logs are JSON, one line per event, with the fields that tie it together: `correl
 | `wagering_outbox_lag_seconds`, `wagering_outbox_unpublished` | none | measured when scraped: the age of the oldest event not yet published, and how many are waiting |
 | `wagering_settlement_duration_seconds` | `source`, `outcome` (`decided`, `replay`, `error`) | histogram of one settlement, first line of the use case to its return |
 | `wagering_reconciliations_total` | `result` | a reconciliation, consistent or divergent |
+| `wagering_retention_deleted_total` | `table`: `inbox`, `outbox` | rows the retention job removed |
 
 No label takes a value from a request (a wallet, a provider, a key), because that would make the number of series unbounded. The counters an alert would watch start at zero, so a rate over one that has not happened yet is 0 and not absent; the `wagering_transactions_total` series appear with their first transaction. **Not provided:** dashboards, tracing, and alert rules; the metrics are the raw material.
 
@@ -262,7 +264,7 @@ Every required test runs against **real PostgreSQL and a real SQS emulator**, wi
 - **Event publishing is the slowest part, by a wide margin.** On the reference machine the publishers send about 130 to 250 events per second while settlement can produce about 900, so **a sustained rate above roughly 65 to 125 bets per second grows the outbox lag without bound** until the load stops. Nothing is lost or duplicated; consumers fall behind. The sends are batched (ten to a call), which lifted a publisher alone from 137 to 185 events per second, but the local broker emulator handles requests one after another and is the ceiling; real SQS was not measured ([`docs/LOAD-TEST.md`](docs/LOAD-TEST.md)).
 - **Capacity is a short, single-machine measurement:** about 470 bets per second over many wallets and about 145 on one wallet, in 20-second runs on a laptop with the generator on the same cores. Sustained load, a real network and AWS were not measured.
 - **A database outage no longer dead-letters what is waiting** (the consumer stops receiving while the readiness probe fails, FR-101), but the batch in hand when it begins spends one delivery, and a message that fails while the database answers still ends in the DLQ after five. Replaying is safe and manual ([how](ARCHITECTURE.md#replaying-the-dead-letter-queue)).
-- **Nothing is ever deleted:** the inbox and the outbox grow with traffic. Which rows are safe to remove is in [ARCHITECTURE.md](ARCHITECTURE.md#data-retention); the job is not built.
+- **Retention deletes, and does not archive:** inbox rows older than 21 days and published outbox rows older than 30 are removed by a job in the publisher role; the ledger and the transactions never are. The space is reused by PostgreSQL but not returned to the system without a `VACUUM FULL`. See [ARCHITECTURE.md](ARCHITECTURE.md#data-retention).
 - **A waiting reversal is settled at its next look,** up to the current backoff after its bet arrives, and a bet that arrives after its reversal expired is applied normally (no tombstone).
 - **Events can arrive twice and out of order** within a wallet after a retry. Consumers deduplicate on `eventId` and order by `walletVersion` (IR-03).
 - **Reconciliation scans a wallet's whole ledger** and is unauthenticated. At most two run at once per process (a third is a `503`), so it cannot take the pool from settlement, but it can still be used to keep two connections busy per process (T-16).

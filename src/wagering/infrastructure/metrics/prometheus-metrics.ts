@@ -2,6 +2,7 @@ import { Counter, Gauge, Histogram, type Registry } from "prom-client";
 import type {
   DeadLetterReason,
   DuplicateKind,
+  RetentionTable,
   RetryComponent,
   TransientReason,
   WageringMetrics,
@@ -20,6 +21,7 @@ export class PrometheusMetrics implements WageringMetrics {
   private readonly lockConflicts: Counter<"kind">;
   private readonly transientFailures: Counter<"reason">;
   private readonly duration: Histogram<"source" | "outcome">;
+  private readonly retention: Counter<"table">;
 
   constructor(registry: Registry) {
     const registers = [registry];
@@ -59,6 +61,12 @@ export class PrometheusMetrics implements WageringMetrics {
       labelNames: ["reason"],
       registers,
     });
+    this.retention = new Counter({
+      name: "wagering_retention_deleted_total",
+      help: "Rows the retention job removed, by table.",
+      labelNames: ["table"],
+      registers,
+    });
     this.duration = new Histogram({
       name: "wagering_settlement_duration_seconds",
       help: "How long one settlement took, by where it came from and how it ended.",
@@ -81,6 +89,7 @@ export class PrometheusMetrics implements WageringMetrics {
       this.retries.inc({ component }, 0);
     }
     for (const reason of ["permanent", "attempts-exhausted"] as const) this.deadLetters.inc({ reason }, 0);
+    for (const table of ["inbox", "outbox"] as const) this.retention.inc({ table }, 0);
     for (const kind of ["lock_timeout", "deadlock"] as const) this.lockConflicts.inc({ kind }, 0);
     for (const reason of [
       "lock_timeout",
@@ -110,6 +119,9 @@ export class PrometheusMetrics implements WageringMetrics {
   databaseTransient(reason: TransientReason): void {
     this.transientFailures.inc({ reason });
     if (reason === "lock_timeout" || reason === "deadlock") this.lockConflicts.inc({ kind: reason });
+  }
+  retentionDeleted(table: RetentionTable, count: number): void {
+    this.retention.inc({ table }, count);
   }
   settlementTimed(event: { source: string; outcome: string; seconds: number }): void {
     this.duration.observe({ source: event.source, outcome: event.outcome }, event.seconds);

@@ -445,11 +445,12 @@ There is no tool for this; it is a few calls of the SQS API. The broker's own re
 
 ### Data retention
 
-**Nothing is ever deleted**, and two tables grow with traffic: `inbox_messages` (one row per settled queue message) and `outbox_messages` (one row per event, published or not). The ledger and the transactions are the record and are kept by design.
+**The ledger and the transactions are never deleted** (they are the record). Two tables grow with traffic and are trimmed by the retention job (FR-103, FR-104): `inbox_messages` (one row per settled queue message) and `outbox_messages` (one row per event, published or not). The ledger and the transactions are the record and are kept by design.
 
 - An inbox row is needed only while the same message can still arrive: the queue's retention (four days by default, fourteen at most) plus however long a message may sit in the DLQ before a replay. Deleting older rows is safe for that reason, and only for that reason.
 - A published outbox row is needed by nobody once it is out, except as an audit of what was sent; the lag and backlog queries read only the unpublished rows, through a partial index, so the published ones cost storage and not speed.
-- A retention job would be a periodic `DELETE` by age on each, in batches. It is not built, so on a long-running system both tables must be watched.
+- **The job** (`ApplyRetention`, in the publisher role) wakes every `RETENTION_INTERVAL_MS` (1 hour), deletes one batch of 1,000 of each table by age, and goes again at once while a batch was full. The deletes take `FOR UPDATE SKIP LOCKED`, so several processes running it take different rows instead of waiting on each other. `INBOX_RETENTION_DAYS` defaults to 21: the queue keeps a message at most 14 days, plus a week of allowance for a message sitting in the DLQ before a replay. **It must stay above both**: shortening it below the queue's retention lets a late redelivery reach settlement without its inbox row. Whether the idempotency key then catches it was not tested here. `OUTBOX_RETENTION_DAYS` defaults to 30 and applies to published rows only.
+- **What it does not do.** It does not archive: what it deletes is gone (the published events are in the broker and with their consumers, and the ledger still explains every balance). It does not reclaim disk by itself: PostgreSQL reuses the space of deleted rows, and returning it to the system needs `VACUUM FULL` or `pg_repack`, which is an operator's decision. It deletes from the clock of the process running it, so clocks that disagree by days would disagree on what is old. The defaults are judgements, not measured on a real volume.
 
 ### Consuming the events
 
@@ -483,7 +484,7 @@ Events go to `wagering-events.fifo`, one message per event, with the wallet as `
 - **A waiting reversal is settled at its next look,** up to the current backoff after its bet arrives.
 - **Events are at least once and may reorder** within a wallet after a retry; consumers follow IR-03.
 - **Reconciliation scans the whole ledger of the wallet** it is asked about, so its cost grows with the ledger. It is bounded in how many run at once, not in how long each takes: `RECONCILIATION_MAX_CONCURRENT` (2) per process, one over is a `503` at once (FR-102), so the rest of the pool stays for settlement. The bound is per process: N processes allow N times as many against the database. A checkpointed, incremental check, which would make the cost independent of the ledger, was not built: it would be a second source of truth for the balance to keep honest, and the endpoint is a diagnostic, not a hot path.
-- **No data retention:** the inbox and the outbox grow without bound (see Operating it).
+- **Retention deletes and does not archive or reclaim disk** (see Data retention); the ledger and the transactions grow without bound by design.
 - **Replaying the DLQ is manual,** a few SQS calls, described in Operating it.
 - **The failure suite's kill points are the ones it finds** (a held acknowledgement, a held publish, held locks), not an arbitrary instruction.
 

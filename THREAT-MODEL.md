@@ -118,8 +118,8 @@ queue ───SQS────▶ [ consumer ]┘                          │
 
 ### T-15 — Unbounded storage growth
 **Actor:** time. **Impact:** `inbox_messages` and `outbox_messages` grow with every message and event, and nothing deletes them; on a long-running system the disk fills.
-**Mitigation:** none in code. ARCHITECTURE.md (Operating it) says which rows are safe to delete and why.
-**Residual:** full until a retention job exists.
+**Mitigation:** a retention job in the publisher role deletes inbox rows older than `INBOX_RETENTION_DAYS` (21, above the queue's 14-day maximum plus a DLQ allowance) and published outbox rows older than `OUTBOX_RETENTION_DAYS` (30), in batches, and never an unpublished one (FR-103, FR-104).
+**Residual:** the ledger and the transactions are kept forever by design, so storage still grows with the number of transactions, only slower. Deleted space is reused but not returned to the system without `VACUUM FULL`. The defaults are judgements and were not measured on a real volume. An inbox retention set below the queue's would let a late redelivery reach settlement without its inbox row (not tested what the idempotency key then does).
 
 ### T-16 — An expensive read used as a lever
 **Actor:** any HTTP caller. **Impact:** `POST /wallets/:walletId/reconciliation` reads a wallet's whole ledger in one statement; a few concurrent calls on a large wallet hold pooled connections for up to the statement timeout (5 s) and delay settlement on the same process.
@@ -149,7 +149,7 @@ queue ───SQS────▶ [ consumer ]┘                          │
 | T-12 | FR-53, FR-54 |
 | T-13 | NFR-10 |
 | T-14 | FR-91, NFR-06 |
-| T-15 | none |
+| T-15 | FR-103, FR-104 |
 | T-16 | FR-71, FR-102, NFR-11 |
 | T-17 | FR-100, FR-65 |
 
@@ -177,7 +177,7 @@ What each mitigation is tested by, and whether the protection was removed to see
 | T-11 exhaustion, under stress | `./scripts/stress.sh` ([`docs/STRESS-TEST.md`](docs/STRESS-TEST.md)): spike, ramp-up, soak and a database outage, no `500`, books reconciled (measured, not a CI gate) | not applicable: a measurement |
 | T-14 delivery behind | `bun run test:load` (measured, not asserted) | not applicable: a measurement |
 | T-16 expensive read | `unit/application/reconcile-wallet.test.ts` (the bound, the release on success and on failure), `integration/reconciliation.test.ts` (a held pool: settlement is not starved) | the bound removed (settlement could not get a connection); the release removed |
-| T-15 | none: not mitigated | not applicable |
+| T-15 storage growth | `integration/retention.test.ts` (real PostgreSQL: the cutoff, an unpublished row kept, batches), `unit/application/apply-retention.test.ts` | the unpublished guard removed; the inbox cutoff moved 30 days later |
 
 ## 7. Explicitly not addressed
 

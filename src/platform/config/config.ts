@@ -37,6 +37,12 @@ export interface AppConfig {
   readonly outboxPollIntervalMs: number;
   /** Rows one publisher claims per round, sent over `outboxPublishConcurrency` lanes ten to a call. */
   readonly outboxBatchSize: number;
+  /** Inbox rows older than this are deleted. Must exceed the queue's retention plus a DLQ allowance (T-15). */
+  readonly inboxRetentionDays: number;
+  /** Published outbox rows older than this are deleted. */
+  readonly outboxRetentionDays: number;
+  /** How often the retention job looks. */
+  readonly retentionIntervalMs: number;
   /**
    * How many calls to the broker one publisher has in flight at once; a wallet is always in one lane. 1 by default:
    * on one machine with the emulator, which handles requests one after another, more lanes raised the publish rate
@@ -82,6 +88,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     queueBackoffCapSeconds: boundedInteger(env, "QUEUE_BACKOFF_CAP_SECONDS", 30, 43_200),
     outboxPollIntervalMs: positiveInteger(env, "OUTBOX_POLL_INTERVAL_MS", 500),
     outboxBatchSize: boundedInteger(env, "OUTBOX_BATCH_SIZE", 100, 1_000),
+    inboxRetentionDays: boundedInteger(env, "INBOX_RETENTION_DAYS", 21, 3_650),
+    outboxRetentionDays: boundedInteger(env, "OUTBOX_RETENTION_DAYS", 30, 3_650),
+    retentionIntervalMs: positiveInteger(env, "RETENTION_INTERVAL_MS", 3_600_000),
     outboxPublishConcurrency: boundedInteger(env, "OUTBOX_PUBLISH_CONCURRENCY", 1, 32),
     outboxLeaseMs: positiveInteger(env, "OUTBOX_LEASE_MS", 30_000),
     outboxRetryBaseSeconds: positiveInteger(env, "OUTBOX_RETRY_BASE_SECONDS", 1),
