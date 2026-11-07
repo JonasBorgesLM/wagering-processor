@@ -250,6 +250,7 @@ paths:
           in: path
           required: true
           schema: { type: string, format: uuid }
+          example: 0192f298-345e-7e38-af88-e43f851a819d
         - $ref: "#/components/parameters/CorrelationId"
       responses:
         "200":
@@ -276,10 +277,12 @@ paths:
           in: path
           required: true
           schema: { $ref: "#/components/schemas/OpaqueId" }
+          example: provider-a
         - name: externalTransactionId
           in: path
           required: true
           schema: { $ref: "#/components/schemas/OpaqueId" }
+          example: transaction-123
         - $ref: "#/components/parameters/CorrelationId"
       responses:
         "200":
@@ -356,6 +359,7 @@ components:
       required: true
       description: A UUID, in any case; handled in lowercase.
       schema: { type: string, format: uuid }
+      example: 0192f291-27dd-7d3f-8071-5f8685deef37
     CorrelationId:
       name: X-Correlation-Id
       in: header

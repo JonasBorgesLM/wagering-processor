@@ -5,3 +5,4 @@ coverage/
 .DS_Store
 graphify-out/
 load-results/
+security-results/

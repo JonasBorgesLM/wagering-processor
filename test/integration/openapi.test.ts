@@ -7,7 +7,7 @@ import { type RunningApp, startApp } from "../support/app";
 import { call } from "../support/http";
 import { brl, command, SettlementWorld } from "../support/settlement";
 
-// Requirements: FR-63, FR-68, FR-69 (the contract of the HTTP API).
+// Requirements: FR-63, FR-65, FR-68, FR-69, FR-100 (the contract of the HTTP API and its response headers).
 // docs/openapi.yaml is the machine-readable form of the API. This keeps it true in three ways: every route the running
 // application serves is in it and every route in it is served; every example in it is valid against its own schema;
 // and what the application really answers, for each operation and status it can be made to give, validates against
@@ -298,6 +298,48 @@ describe("what the application answers validates against what the spec declares"
     expect((await get(`/providers/${bet.providerId}/wagering/transactions/bad%01id`, external)).status).toBe(
       400,
     );
+  });
+
+  test("every answer carries the security headers, errors, refusals and unknown routes included", async () => {
+    const wallet = await world.openWallet("10.00");
+    const expected = {
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+      "referrer-policy": "no-referrer",
+      "cache-control": "no-store",
+    };
+    const answers = [
+      await call(`${app.url}/wallets/${wallet.walletId}`),
+      await call(`${app.url}/wallets/${randomUUID()}`),
+      await call(`${app.url}/wallets/not-a-uuid`),
+      await call(`${app.url}/no/such/route`),
+      await call(`${app.url}/wallets`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{",
+      }),
+      await call(`${app.url}/wallets`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ junk: "x".repeat(20_000) }),
+      }),
+      await call(`${app.url}/health/live`),
+      await call(`${app.url}/health/ready`),
+      await call(`${app.url}/metrics`),
+    ];
+    expect(answers.map((answer) => answer.status)).toEqual([200, 404, 400, 404, 400, 413, 200, 200, 200]);
+    for (const [index, answer] of answers.entries()) {
+      for (const [name, value] of Object.entries(expected)) {
+        expect(answer.headers.get(name), `${name} on answer ${index} (${answer.status})`).toBe(value);
+      }
+      expect(answer.headers.get("strict-transport-security")).toBeNull();
+      // The same gap hid the correlation id of what the body parser refuses (FR-65).
+      expect(answer.headers.get("x-correlation-id"), `x-correlation-id on answer ${index}`).toBeTruthy();
+    }
+
+    const behindTls = await call(`${app.url}/health/live`, { headers: { "x-forwarded-proto": "https" } });
+    expect(behindTls.headers.get("strict-transport-security")).toBe("max-age=31536000; includeSubDomains");
   });
 
   test("health and metrics", async () => {

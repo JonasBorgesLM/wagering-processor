@@ -1,0 +1,41 @@
+# Warden configuration for scanning this service's own local stack (issue #59).
+#
+#   ./scripts/security-scan.sh
+#
+# The target is a throwaway instance on loopback with a throwaway database: warden's active checks send hostile
+# input, and `test_creates` lets them send bodies to POST routes, which here opens wallets and submits transactions.
+# scope.allowed_hosts is the hard boundary; warden refuses a request to any other host.
+schema_version: 1
+
+target:
+  base_url: http://127.0.0.1:3099
+
+scope:
+  allowed_hosts:
+    - "127.0.0.1:3099"
+
+# No `auth` block: the API has no authentication (ADR-0009) and the spec declares no protected route, so there is
+# nothing to log in to. That absence is itself the largest finding (T-06); the scan is for what else is there.
+
+engine:
+  max_concurrency: 4
+  requests_per_second: 20
+  timeout: 10m
+  request_timeout: 15s
+  test_creates: true        # POST bodies are sent; throwaway database only
+  test_destructive: false   # nothing here deletes, and it stays off
+
+checks:
+  enabled:
+    - missing-headers
+    - exposed-secrets
+    - sqli-boolean
+    - xss-reflected
+    - auth-required
+    - cache-on-authenticated
+    - cors-misconfigured
+    - dangerous-http-methods
+    - idor
+    - jwt-weak
+    - verbose-errors
+    - open-redirect
