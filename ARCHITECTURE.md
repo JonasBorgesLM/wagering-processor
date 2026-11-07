@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: v1.1.0.** Every section below describes code that exists and is tested; where something is a judgement rather than a measurement, or is not provided, it says so, and the [limitations](#known-limitations) are in one place.
+> **Status: v1.1.1.** Every section below describes code that exists and is tested; where something is a judgement rather than a measurement, or is not provided, it says so, and the [limitations](#known-limitations) are in one place.
 
 ---
 
