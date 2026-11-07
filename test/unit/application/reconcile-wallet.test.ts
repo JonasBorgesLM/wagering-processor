@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { WalletNotFoundError } from "../../../src/wagering/application/errors";
+import { TransientFailureError, WalletNotFoundError } from "../../../src/wagering/application/errors";
 import type {
   LedgerSnapshot,
   ReconciliationReader,
@@ -89,5 +89,67 @@ describe("making it visible, and only that", () => {
     const { run, reported } = reconcile(undefined);
     await expect(run()).rejects.toThrow(WalletNotFoundError);
     expect(reported).toEqual([]);
+  });
+});
+
+describe("how many run at once is bounded (FR-102)", () => {
+  /** A reader whose snapshots stay open until the test lets them finish, or fail. */
+  function held(maxConcurrent: number) {
+    const open: Array<{ finish: () => void; fail: () => void }> = [];
+    const reader: ReconciliationReader = {
+      snapshot: () =>
+        new Promise((resolve, reject) => {
+          open.push({
+            finish: () =>
+              resolve({
+                storedBalance: brl("0.00"),
+                credits: brl("0.00"),
+                debits: brl("0.00"),
+                checkedEntries: 0,
+                issueCount: 0,
+                issues: [],
+              }),
+            fail: () => reject(new Error("the read failed")),
+          });
+        }),
+    };
+    const useCase = new ReconcileWallet(reader, { checked: () => undefined }, maxConcurrent);
+    return { run: () => useCase.execute("wallet-1"), open };
+  }
+
+  test("one over the bound is refused at once as transient, and the ones running are untouched", async () => {
+    const { run, open } = held(2);
+    const first = run();
+    const second = run();
+    // Raced against a timer: without the bound the third call would wait for the reader for ever.
+    const third = await Promise.race([
+      run().catch((error: unknown) => error),
+      Bun.sleep(200).then(() => "waited"),
+    ]);
+    expect(third).toBeInstanceOf(TransientFailureError);
+    expect(open).toHaveLength(2); // the refused one never reached the reader
+    for (const read of open) read.finish();
+    expect((await first).consistent).toBe(true);
+    expect((await second).consistent).toBe(true);
+  });
+
+  test("a finished one frees its place", async () => {
+    const { run, open } = held(1);
+    const first = run();
+    open[0]?.finish();
+    await first;
+    const next = run();
+    open[1]?.finish();
+    expect((await next).consistent).toBe(true);
+  });
+
+  test("a failed one frees its place too, or a few errors would close the endpoint for good", async () => {
+    const { run, open } = held(1);
+    const first = run();
+    open[0]?.fail();
+    await expect(first).rejects.toThrow("the read failed");
+    const next = run();
+    open[1]?.finish();
+    expect((await next).consistent).toBe(true);
   });
 });

@@ -122,9 +122,9 @@ export class WageringModule {
         },
         {
           provide: ReconcileWallet,
-          inject: [RECONCILIATION_READER, DIVERGENCE_REPORTER],
-          useFactory: (reader: ReconciliationReader, reporter: DivergenceReporter) =>
-            new ReconcileWallet(reader, reporter),
+          inject: [RECONCILIATION_READER, DIVERGENCE_REPORTER, APP_CONFIG],
+          useFactory: (reader: ReconciliationReader, reporter: DivergenceReporter, config: AppConfig) =>
+            new ReconcileWallet(reader, reporter, config.reconciliationMaxConcurrent),
         },
         {
           provide: OpenWallet,

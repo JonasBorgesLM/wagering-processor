@@ -21,6 +21,8 @@ export interface AppConfig {
   readonly lockTimeoutMs: number;
   /** The longest any statement may run, including its lock wait, so nothing holds a connection indefinitely (NFR-11). */
   readonly statementTimeoutMs: number;
+  /** Reconciliations running at once in this process; one over is refused as transient (FR-102). */
+  readonly reconciliationMaxConcurrent: number;
   /** Connections one process may hold. See ARCHITECTURE.md for why it is modest. */
   readonly databasePoolMax: number;
   /** How long a request waits for a free connection before giving up as a transient failure (NFR-11). */
@@ -73,6 +75,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     lockTimeoutMs: positiveInteger(env, "LOCK_TIMEOUT_MS", 2_000),
     statementTimeoutMs: positiveInteger(env, "STATEMENT_TIMEOUT_MS", 5_000),
     databasePoolMax: positiveInteger(env, "DATABASE_POOL_MAX", 10),
+    reconciliationMaxConcurrent: positiveInteger(env, "RECONCILIATION_MAX_CONCURRENT", 2),
     databaseAcquireTimeoutMs: positiveInteger(env, "DATABASE_ACQUIRE_TIMEOUT_MS", 1_000),
     queueWaitSeconds: boundedInteger(env, "QUEUE_WAIT_SECONDS", 5, 20),
     queueBackoffBaseSeconds: positiveInteger(env, "QUEUE_BACKOFF_BASE_SECONDS", 2),
