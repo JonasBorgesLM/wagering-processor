@@ -4,7 +4,7 @@ A distributed financial service that applies betting operations from game provid
 
 Built for the [Jungle Gaming backend challenge](https://github.com/junglegaming/backend-challenge).
 
-> **Status: feature complete, awaiting release.** Everything the challenge asks for is implemented and tested against real PostgreSQL and a real SQS emulator, including a failure suite with real processes. What is **not** here is listed under [Known limitations](#known-limitations), and it matters: read it before relying on this.
+> **Status: v1.0.0.** Everything the challenge asks for is implemented and tested against real PostgreSQL and a real SQS emulator, including a failure suite with real processes. What is **not** here is listed under [Known limitations](#known-limitations), and it matters: read it before relying on this.
 
 ---
 

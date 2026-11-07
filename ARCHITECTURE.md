@@ -2,7 +2,7 @@
 
 How `wagering-processor` is built, and why. Rules live in [`REQUIREMENTS.md`](REQUIREMENTS.md), threats in [`THREAT-MODEL.md`](THREAT-MODEL.md), contested decisions in [`docs/adr/`](docs/adr/README.md).
 
-> **Status: feature complete, awaiting release.** Every section below describes code that exists and is tested; where something is a judgement rather than a measurement, or is not provided, it says so, and the [limitations](#known-limitations) are in one place.
+> **Status: v1.0.0.** Every section below describes code that exists and is tested; where something is a judgement rather than a measurement, or is not provided, it says so, and the [limitations](#known-limitations) are in one place.
 
 ---
 
@@ -466,4 +466,4 @@ Live status is on the [project board](https://github.com/users/JonasBorgesLM/pro
 | 6 | Out-of-order references worker | Done (#19) |
 | 7 | Reconciliation and observability | Done (#20, #21) |
 | 8 | Multi-process failure suite (challenge §13) | Done (#22) |
-| 9 | Final documents, optional load test, release | Documents (#23) and load test (#24) done; release (#25) not started |
+| 9 | Final documents, optional load test, release | Done (#23, #24, #25): v1.0.0 |
