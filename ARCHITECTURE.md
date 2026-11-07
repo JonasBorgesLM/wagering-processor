@@ -25,7 +25,7 @@ src/
                      resilience (backoff), SQS client
   app.ts  app.module.ts  main.ts     the composition root
 migrations/          versioned and reversible
-test/                unit/  integration/  concurrency/  support/
+test/                unit/  integration/  concurrency/  load/  support/
 ```
 
 | Layer | May import | Why |
