@@ -3,8 +3,7 @@ import { MikroORM } from "@mikro-orm/postgresql";
 import { Controller, Get, Inject, Module, ServiceUnavailableException } from "@nestjs/common";
 import { QUEUES } from "../config/config";
 import { DrainState } from "../lifecycle/drain-state";
-
-const PROBE_TIMEOUT_MS = 2_000;
+import { databaseProbe, PROBE_TIMEOUT_MS, probe } from "./probe";
 
 @Controller("health")
 class HealthController {
@@ -22,7 +21,7 @@ class HealthController {
   @Get("ready")
   async ready(): Promise<Record<string, unknown>> {
     const [postgres, sqs] = await Promise.all([
-      probe(() => this.orm.em.getConnection().execute("select 1")),
+      databaseProbe(this.orm)(),
       probe(() =>
         this.sqs.send(new GetQueueUrlCommand({ QueueName: QUEUES.input }), {
           abortSignal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
@@ -34,18 +33,6 @@ class HealthController {
       throw new ServiceUnavailableException({ status: "unavailable", ...body });
     }
     return { status: "ok", ...body };
-  }
-}
-
-async function probe(check: () => Promise<unknown>): Promise<"up" | "down"> {
-  try {
-    await Promise.race([
-      check(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), PROBE_TIMEOUT_MS)),
-    ]);
-    return "up";
-  } catch {
-    return "down";
   }
 }
 
