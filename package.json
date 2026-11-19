@@ -23,7 +23,7 @@
     "check:docs": "./.github/scripts/check-docs.sh"
   },
   "dependencies": {
-    "@aws-sdk/client-sqs": "3.1164.0",
+    "@aws-sdk/client-sqs": "3.1169.0",
     "@mikro-orm/core": "7.2.8",
     "@mikro-orm/migrations": "7.2.8",
     "@mikro-orm/postgresql": "7.2.8",
